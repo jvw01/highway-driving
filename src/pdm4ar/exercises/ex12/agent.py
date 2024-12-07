@@ -36,10 +36,16 @@ class Pdm4arAgent(Agent):
     def on_episode_init(self, init_obs: InitSimObservations):
         """This method is called by the simulator only at the beginning of each simulation.
         Do not modify the signature of this method."""
-        self.name = init_obs.my_name
+        self.name = init_obs.my_name # 'Ego'
         self.goal = init_obs.goal
         self.sg = init_obs.model_geometry
         self.sp = init_obs.model_params
+
+        #########
+        # static obstacles (contains a LineString, m, I_z and e)
+        static_obs = init_obs.dg_scenario.static_obstacles
+        print(static_obs)
+        #########
 
     def get_commands(self, sim_obs: SimObservations) -> VehicleCommands:
         """This method is called by the simulator every dt_commands seconds (0.1s by default).
@@ -50,6 +56,23 @@ class Pdm4arAgent(Agent):
         :param sim_obs:
         :return:
         """
+
+        #########
+        # sim_obs.players: a dictionary with key: name of player and value: PlayerObservations
+        # PlayerObservations contains the state and occupancy of the player
+        # state: {'x', 'y', 'psi', 'vx', 'delta'}
+        # occupancy: polygons with 5 points (first and last points are the same) so essentially rectangles and parallelograms that represent the space the car uses
+        # contains the own and other vehicles' states and occupancies and the vehicles are named 'Ego', 'P1', 'P2', ...
+        
+        print("iteration at: ", sim_obs.time)
+        for player_name, player_obs in sim_obs.players.items():
+            player_state = player_obs.state
+            player_obs = player_obs.occupancy
+            print(player_name)
+            print(player_state)
+            print(player_obs)
+
+        #########
 
         # todo implement here some better planning
         rnd_acc = random.random() * self.params.param1
