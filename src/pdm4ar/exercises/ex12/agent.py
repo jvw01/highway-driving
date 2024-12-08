@@ -12,6 +12,10 @@ from dg_commons.sim.models.vehicle import VehicleCommands
 from dg_commons.sim.models.vehicle_structures import VehicleGeometry
 from dg_commons.sim.models.vehicle_utils import VehicleParameters
 
+# for plotting
+import matplotlib.pyplot as plt
+from shapely.geometry import Polygon
+import os
 
 @dataclass(frozen=True)
 class Pdm4arAgentParams:
@@ -43,8 +47,8 @@ class Pdm4arAgent(Agent):
 
         #########
         # static obstacles (contains a LineString, m, I_z and e)
-        static_obs = init_obs.dg_scenario.static_obstacles
-        print(static_obs)
+        self.static_obs = init_obs.dg_scenario.static_obstacles
+        # print(self.static_obs)
         #########
 
     def get_commands(self, sim_obs: SimObservations) -> VehicleCommands:
@@ -63,14 +67,59 @@ class Pdm4arAgent(Agent):
         # state: {'x', 'y', 'psi', 'vx', 'delta'}
         # occupancy: polygons with 5 points (first and last points are the same) so essentially rectangles and parallelograms that represent the space the car uses
         # contains the own and other vehicles' states and occupancies and the vehicles are named 'Ego', 'P1', 'P2', ...
-        
+
         print("iteration at: ", sim_obs.time)
+        # for player_name, player_obs in sim_obs.players.items():
+        #     player_state = player_obs.state
+        #     player_obs = player_obs.occupancy
+        #     print(player_name)
+        #     print(player_state)
+        #     print(player_obs)
+
+
+        ######################## PLOT ########################
+        plt.figure(figsize=(12, 10))
+
         for player_name, player_obs in sim_obs.players.items():
-            player_state = player_obs.state
-            player_obs = player_obs.occupancy
-            print(player_name)
-            print(player_state)
-            print(player_obs)
+    
+            polygons = [player_obs.occupancy for player_obs in sim_obs.players.values()]
+            # Plot polygons
+            for polygon_coords in polygons:
+                # print(polygon_coords)
+                # print(type(polygon_coords))
+                x, y = polygon_coords.exterior.xy
+
+                if player_name == self.name:
+                    plt.fill(x, y, alpha=0.3, color='red')
+                else:
+                    plt.fill(x, y, alpha=0.3, color='blue')
+
+            # Plot state points and connect them
+            # print(player_obs.state)
+            # print(type(player_obs.state))
+            state_x = player_obs.state.x
+            state_y = player_obs.state.y
+            plt.plot(state_x, state_y, marker='o', color='black', label="State Path")
+
+            # Plot static obstacles (from on_episode_init)
+            for obs in self.static_obs:
+                x, y = obs.shape.xy
+                plt.plot(x, y, linestyle='-', linewidth=2, color='darkorchid')
+            
+
+        # Add labels and legend
+        output_dir = "/tmp"
+        os.makedirs(output_dir, exist_ok=True)
+        filename = os.path.join(output_dir, f"agent.png")
+        plt.xlabel("Longitude")
+        plt.ylabel("Latitude")
+        plt.title("Polygon Occupancies, State Path, and Static Obstacles")
+        plt.legend()
+        plt.grid(True)
+        plt.savefig(filename)
+        plt.close()
+        print(f"Image saved to {filename} \n")
+        ######################## PLOT ########################
 
         #########
 
