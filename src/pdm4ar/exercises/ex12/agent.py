@@ -21,6 +21,7 @@ import math
 from dg_commons.sim.models.model_utils import apply_full_acceleration_limits
 from dg_commons.dynamics import BicycleDynamics
 import numpy as np
+from sympy import primitive
 
 
 @dataclass(frozen=True)
@@ -63,11 +64,12 @@ class Pdm4arAgent(Agent):
         :return:
         """
         x = sim_obs.players["Ego"].state  # type: ignore #is Vehicle state
-        print(type(x))
         bd = BicycleDynamics(self.sg, self.sp)
-        mpg_params = MPGParam.from_vehicle_parameters(Decimal(self.dt), 10, 5, 5, self.sp)
-        mpg = MotionPrimitivesGenerator(mpg_params, bd.successor, self.sp)
+        mpg_params = MPGParam.from_vehicle_parameters(Decimal(self.dt), n_steps=10, n_vel=1, n_steer=7, vp=self.sp)
+        mpg = MotionPrimitivesGenerator(param=mpg_params, vehicle_dynamics=bd.successor, vehicle_param=self.sp)
         mp = mpg.generate(x)
+
+        plot_trajectory(mp)
 
         # todo implement here some better planning
         rnd_acc = random.random() * self.params.param1
@@ -97,3 +99,26 @@ class Pdm4arAgent(Agent):
             vx=x0.vx + t * acc,
             delta=x0.delta + t * ddelta,
         )
+
+### BACKUP ###
+import matplotlib.pyplot as plt
+import os
+
+
+def plot_trajectory(mp):
+    primitives = []
+    for traj in mp:
+        primitive = np.array([[state.p[0], state.p[1]] for state in traj.as_path()])
+        primitives.append(primitive)
+
+    for prim in primitives:
+        plt.plot(prim[:, 0], prim[:, 1], marker="o", linestyle="-", color="b")
+
+    # Plot the trajectory
+    output_dir = "/tmp"
+    os.makedirs(output_dir, exist_ok=True)
+    filename = os.path.join(output_dir, f"trajectory.png")
+    plt.grid()
+    plt.savefig(filename)
+    plt.close()
+    print(f"Image saved to {filename} \n")
