@@ -19,6 +19,8 @@ from decimal import Decimal
 from dg_commons import logger, Timestamp, LinSpaceTuple
 import math
 from dg_commons.sim.models.model_utils import apply_full_acceleration_limits
+from dg_commons.dynamics import BicycleDynamics
+import numpy as np
 
 
 @dataclass(frozen=True)
@@ -60,11 +62,12 @@ class Pdm4arAgent(Agent):
         :param sim_obs:
         :return:
         """
-        x = sim_obs.players["Ego"].state  # type: ignore
+        x = sim_obs.players["Ego"].state  # type: ignore #is Vehicle state
+        print(type(x))
+        bd = BicycleDynamics(self.sg, self.sp)
         mpg_params = MPGParam.from_vehicle_parameters(Decimal(self.dt), 10, 5, 5, self.sp)
-        mpg = MotionPrimitivesGenerator(mpg_params, self.get_next_state, self.sp)
-        # cast x here to vehicle state
-        mp = mpg.generate()
+        mpg = MotionPrimitivesGenerator(mpg_params, bd.successor, self.sp)
+        mp = mpg.generate(x)
 
         # todo implement here some better planning
         rnd_acc = random.random() * self.params.param1
