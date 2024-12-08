@@ -21,7 +21,16 @@ import math
 from dg_commons.sim.models.model_utils import apply_full_acceleration_limits
 from dg_commons.dynamics import BicycleDynamics
 import numpy as np
-from sympy import primitive
+from sympy import Mul, primitive
+from dataclasses import dataclass
+from decimal import Decimal
+from itertools import product
+from typing import List, Callable, Set, Optional
+from dg_commons import logger, Timestamp, LinSpaceTuple
+from dg_commons.planning.trajectory import Trajectory
+from dg_commons.sim.models import vehicle_ligths
+from dg_commons.sim.models.vehicle_ligths import LightsCmd
+from networkx import MultiDiGraph
 
 
 @dataclass(frozen=True)
@@ -39,6 +48,7 @@ class Pdm4arAgent(Agent):
     sg: VehicleGeometry
     sp: VehicleParameters
     dt: Decimal
+    lane_width: float
 
     def __init__(self):
         # feel free to remove/modify  the following
@@ -53,6 +63,7 @@ class Pdm4arAgent(Agent):
         self.sg = init_obs.model_geometry
         self.sp = init_obs.model_params
         self.dt = init_obs.dg_scenario.scenario.dt
+        self.lane_width = 2 * init_obs.goal.ref_lane.control_points[0].r
 
     def get_commands(self, sim_obs: SimObservations) -> VehicleCommands:
         """This method is called by the simulator every dt_commands seconds (0.1s by default).
@@ -63,56 +74,86 @@ class Pdm4arAgent(Agent):
         :param sim_obs:
         :return:
         """
-        x = sim_obs.players["Ego"].state  # type: ignore #is Vehicle state
+        # TODO: default values for testing
+        n_vel = 1
+        steer_range = 0.3
+        n_steer = 3
+        n_steps = 10
+
+        x = sim_obs.players["Ego"].state  # type: ignore
         bd = BicycleDynamics(self.sg, self.sp)
-        mpg_params = MPGParam.from_vehicle_parameters(Decimal(self.dt), n_steps=10, n_vel=1, n_steer=7, vp=self.sp)
-        mpg = MotionPrimitivesGenerator(param=mpg_params, vehicle_dynamics=bd.successor, vehicle_param=self.sp)
-        mp = mpg.generate(x)
-
-        plot_trajectory(mp)
-
-        # todo implement here some better planning
-        rnd_acc = random.random() * self.params.param1
-        rnd_ddelta = (random.random() - 0.5) * self.params.param1
-
-        return VehicleCommands(acc=rnd_acc, ddelta=rnd_ddelta)
-
-    def get_next_state(self, x0: VehicleState, u: VehicleCommands, dt: Timestamp) -> VehicleState:
-        """Kinematic bicycle model, returns state derivative for given control inputs"""
-        vx = x0.vx
-        dtheta = vx * math.tan(x0.delta) / self.sg.wheelbase
-        vy = dtheta * self.sg.lr
-        costh = math.cos(x0.psi)
-        sinth = math.sin(x0.psi)
-        xdot = vx * costh - vy * sinth
-        ydot = vx * sinth + vy * costh
-
-        ddelta = steering_constraint(x0.delta, u.ddelta, self.sp)
-        acc = apply_full_acceleration_limits(x0.vx, u.acc, self.sp)
-
-        t = float(dt)
-
-        return VehicleState(
-            x=x0.x + xdot * t,
-            y=x0.y + ydot * t,
-            psi=x0.psi + dtheta * t,
-            vx=x0.vx + t * acc,
-            delta=x0.delta + t * ddelta,
+        mpg_params = MPGParam.from_vehicle_parameters(
+            dt=Decimal(self.dt), n_steps=n_steps, n_vel=n_vel, n_steer=n_steer, vp=self.sp
         )
+        mpg = MotionPrimitivesGenerator(param=mpg_params, vehicle_dynamics=bd.successor, vehicle_param=self.sp)
+        end_states_traj, controls_traj = self.generate_primat(x0=x, mpg=mpg, steer_range=steer_range, n_steer=n_steer)
+
+        plot_trajectory(x, end_states_traj)  # TODO: add lane boundaries for visualization
+        # TODO: use end_states_traj to build graph
+
+        return VehicleCommands(
+            acc=controls_traj[0][0].acc, ddelta=controls_traj[0][0].ddelta, lights=LightsCmd("turn_left")
+        )
+
+    def generate_primat(
+        self,
+        x0: VehicleState,
+        mpg: MotionPrimitivesGenerator,
+        steer_range: float,
+        n_steer: int,
+    ) -> tuple[List[VehicleState], List[List[VehicleCommands]]]:
+        """
+        Reimplement method mpg.generate(x) to generate motion primitives specifically for our problem
+        """
+        end_states_traj = []
+        controls_traj = []
+
+        # create samples in user-defined range - assume constant velocity and variable steering angles
+        v_samples = np.array([x0.vx])
+        sa_samples = np.linspace(
+            *(x0.delta - steer_range, x0.delta + steer_range, n_steer)
+        )  # TODO: need to check if steering angle is valid
+
+        # n = len(v_samples) * len(sa_samples)
+        # print(f"Attempting to generate {n} motion primitives")
+
+        for v_sample, sa_sample in product(v_samples, sa_samples):
+            # calculate acceleration and steering angle rate
+            horizon = float(mpg.param.dt * mpg.param.n_steps)
+            acc = (v_sample - x0.vx) / horizon
+            sa_rate = (sa_sample - x0.delta) / horizon
+
+            # vehicle commands to follow trajectory
+            cmds = VehicleCommands(acc=acc, ddelta=sa_rate)
+
+            # initial values
+            states = [x0]
+            control_inputs = [cmds]
+            next_state = x0
+
+            for _ in range(1, mpg.param.n_steps + 1):
+                next_state = mpg.vehicle_dynamics(next_state, cmds, float(mpg.param.dt))
+                states.append(next_state)
+                control_inputs.append(cmds)
+
+            end_states_traj.append(next_state)
+            controls_traj.append(control_inputs)
+
+        return end_states_traj, controls_traj
+
+    def generate_graph() -> MultiDiGraph:
+        pass
+
 
 ### BACKUP ###
 import matplotlib.pyplot as plt
 import os
 
 
-def plot_trajectory(mp):
-    primitives = []
-    for traj in mp:
-        primitive = np.array([[state.p[0], state.p[1]] for state in traj.as_path()])
-        primitives.append(primitive)
-
-    for prim in primitives:
-        plt.plot(prim[:, 0], prim[:, 1], marker="o", linestyle="-", color="b")
+def plot_trajectory(state: VehicleState, end_states_traj: List[VehicleState]):
+    for end_state_traj in end_states_traj:
+        plt.plot(state.x, state.y, marker="o", linestyle="-", color="r")
+        plt.plot(end_state_traj.x, end_state_traj.y, marker="o", linestyle="-", color="b")
 
     # Plot the trajectory
     output_dir = "/tmp"
