@@ -1,5 +1,6 @@
 import random
 from dataclasses import dataclass
+from tracemalloc import start
 from typing import Sequence
 
 from commonroad.scenario.lanelet import LaneletNetwork
@@ -33,6 +34,9 @@ from dg_commons.sim.models import vehicle_ligths
 from dg_commons.sim.models.vehicle_ligths import LightsCmd
 from networkx import DiGraph
 from shapely.geometry import Polygon
+from .lattice import WeightedGraph
+from .A_star import Astar
+import time
 
 
 @dataclass(frozen=True)
@@ -100,12 +104,39 @@ class Pdm4arAgent(Agent):
         graph = self.generate_graph(current_state, end_states_traj, depth)
 
         # retrieve adjacency list for weighted graph
-        adj_list = self.networkx_2_adjacencylist(graph)
-        plot_adj_list(adj_list, self.lanelet_polygons)
+        start = time.time()
+        # adj_list = self.networkx_2_adjacencylist(graph)
+        end = time.time()
+        print(f"Conversion networkx graph to adjacency list took {end - start} seconds")
+
+        # plot_adj_list(adj_list, self.lanelet_polygons)
+
+        # convert DIgraph to our costum WeightedGraph
+        start = time.time()
+        weighted_graph = self.DIgraph_to_weightedgraph(graph)
+        end = time.time()
+        print(f"Conversion DI graph to weighted graph took {end - start} seconds")
+
+        astar_solver = Astar.path(graph=weighted_graph)
+        shortest_path = astar_solver.path(start=start_node, goal=goal_node)
 
         return VehicleCommands(
             acc=controls_traj[0][0].acc, ddelta=controls_traj[0][0].ddelta, lights=LightsCmd("turn_left")
         )
+
+    def DIgraph_to_weightedgraph(self, graph: DiGraph) -> WeightedGraph:
+        """
+        Converts a NetworkX DiGraph to the custom WeightedGraph structure.
+        """
+        # Extract adjacency list
+        adj_list = {node: set(neighbors.keys()) for node, neighbors in graph.adjacency()}
+        
+        # Extract edge weights
+        weights = {(u, v): data.get('weight', 1.0) for u, v, data in graph.edges(data=True)}
+        
+        # Create WeightedGraph
+        return WeightedGraph(adj_list, weights, graph)
+
 
     def generate_primat(
         self,
