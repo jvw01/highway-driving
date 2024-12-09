@@ -117,27 +117,26 @@ class Pdm4arAgent(Agent):
         end = time.time()
         print(f"Conversion DI graph to weighted graph took {end - start} seconds")
 
-        astar_solver = Astar.path(graph=weighted_graph)
+        # astar_solver = Astar.path(graph=weighted_graph)
         # TODO: need to define finite_horizon_goal
-        shortest_path = astar_solver.path(start=current_state, goal=finite_horizon_goal)
+        # shortest_path = astar_solver.path(start=current_state, goal=finite_horizon_goal)
 
         return VehicleCommands(
             acc=controls_traj[0][0].acc, ddelta=controls_traj[0][0].ddelta, lights=LightsCmd("turn_left")
         )
 
-    def DIgraph_to_weightedgraph(self, graph: DiGraph) -> WeightedGraph:
+    def DiGraphToWeightedGraph(self, graph: DiGraph) -> WeightedGraph:
         """
         Converts a NetworkX DiGraph to the custom WeightedGraph structure.
         """
         # Extract adjacency list
         adj_list = {node: set(neighbors.keys()) for node, neighbors in graph.adjacency()}
-        
+
         # Extract edge weights
         weights = {(u, v): data.get('weight', 1.0) for u, v, data in graph.edges(data=True)}
-        
+
         # Create WeightedGraph
         return WeightedGraph(adj_list, weights, graph)
-
 
     def generate_primat(
         self,
@@ -157,9 +156,6 @@ class Pdm4arAgent(Agent):
         sa_samples = np.linspace(
             *(x0.delta - steer_range, x0.delta + steer_range, n_steer)
         )  # TODO: need to check if steering angle is valid
-
-        # n = len(v_samples) * len(sa_samples)
-        # print(f"Attempting to generate {n} motion primitives")
 
         for v_sample, sa_sample in product(v_samples, sa_samples):
             # calculate acceleration and steering angle rate

@@ -2,6 +2,7 @@ from .lattice import WeightedGraph
 import heapq
 from abc import ABC, abstractmethod
 from typing import Optional, List, TypeVar
+from dataclasses import dataclass
 
 X = TypeVar("X")
 
