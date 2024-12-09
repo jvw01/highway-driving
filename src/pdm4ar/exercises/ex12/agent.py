@@ -198,14 +198,25 @@ class Pdm4arAgent(Agent):
             if level >= depth:
                 return
 
-            # TODO: need to check if child is within lane boundaries (lane boundaries)
             for dx, dy, dpsi in deltas:
+                # check if child is within lane boundaries TODO: add clearance to road boundaries
+                position = np.array([x + dx * np.cos(psi) - dy * np.sin(psi), y + dy * np.cos(psi) + dx * np.sin(psi)])
+                # lanelet_id = self.lanelet_network.find_lanelet_by_position([position])
+                # if not lanelet_id[0]:
+                #     continue
+
                 # only add child if psi is acceptable
                 # if (
                 #     psi + dpsi > np.pi / 4 or psi + dpsi < -np.pi / 4
-                # ):  # TODO: heuristically choose 45deg, needs refinement
+                # ):  # TODO: heuristically chose 45deg, needs refinement
                 #     continue
-                child = (level + 1, x + dx, y + dy, psi + dpsi)
+
+                child = (
+                    level + 1,
+                    x + dx * np.cos(psi) - dy * np.sin(psi),
+                    y + dy * np.cos(psi) + dx * np.sin(psi),
+                    psi + dpsi,
+                )
                 graph.add_node(child)
                 graph.add_edge((level, x, y, psi), child)
 
