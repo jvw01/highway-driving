@@ -105,7 +105,7 @@ class Pdm4arAgent(Agent):
 
         # retrieve adjacency list for weighted graph
         start = time.time()
-        # adj_list = self.networkx_2_adjacencylist(graph)
+        adj_list = self.networkx_2_adjacencylist(graph)
         end = time.time()
         print(f"Conversion networkx graph to adjacency list took {end - start} seconds")
 
@@ -118,7 +118,8 @@ class Pdm4arAgent(Agent):
         print(f"Conversion DI graph to weighted graph took {end - start} seconds")
 
         astar_solver = Astar.path(graph=weighted_graph)
-        shortest_path = astar_solver.path(start=start_node, goal=goal_node)
+        # TODO: need to define finite_horizon_goal
+        shortest_path = astar_solver.path(start=current_state, goal=finite_horizon_goal)
 
         return VehicleCommands(
             acc=controls_traj[0][0].acc, ddelta=controls_traj[0][0].ddelta, lights=LightsCmd("turn_left")
