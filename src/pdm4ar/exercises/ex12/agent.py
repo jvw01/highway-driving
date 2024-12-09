@@ -37,6 +37,7 @@ from shapely.geometry import Polygon
 from .lattice import WeightedGraph
 from .A_star import Astar
 import time
+from matplotlib.collections import LineCollection
 
 
 @dataclass(frozen=True)
@@ -101,21 +102,27 @@ class Pdm4arAgent(Agent):
 
         # build graph
         depth = 8  # TODO: default value - need to decide how deep we want our graph to be
+        start = time.time()
         graph = self.generate_graph(current_state, end_states_traj, depth)
+        end = time.time()
+        print(f"Generating the graph took {end - start} seconds.")
 
         # retrieve adjacency list for weighted graph
         start = time.time()
         adj_list = self.networkx_2_adjacencylist(graph)
         end = time.time()
-        print(f"Conversion networkx graph to adjacency list took {end - start} seconds")
-
-        # plot_adj_list(adj_list, self.lanelet_polygons)
+        print(f"Conversion networkx graph to adjacency list took {end - start} seconds.")
 
         # convert DIgraph to our costum WeightedGraph
         start = time.time()
-        weighted_graph = self.DIgraph_to_weightedgraph(graph)
+        weighted_graph = self.digraph_to_weighted_graph(graph)
         end = time.time()
-        print(f"Conversion DI graph to weighted graph took {end - start} seconds")
+        print(f"Conversion DI graph to weighted graph took {end - start} seconds.")
+
+        start = time.time()
+        plot_adj_list(adj_list, self.lanelet_polygons)
+        end = time.time()
+        print(f"Plotting the graph took {end - start} seconds.")
 
         # astar_solver = Astar.path(graph=weighted_graph)
         # TODO: need to define finite_horizon_goal
@@ -125,7 +132,7 @@ class Pdm4arAgent(Agent):
             acc=controls_traj[0][0].acc, ddelta=controls_traj[0][0].ddelta, lights=LightsCmd("turn_left")
         )
 
-    def DiGraphToWeightedGraph(self, graph: DiGraph) -> WeightedGraph:
+    def digraph_to_weighted_graph(self, graph: DiGraph) -> WeightedGraph:
         """
         Converts a NetworkX DiGraph to the custom WeightedGraph structure.
         """
@@ -243,17 +250,28 @@ import os
 def plot_adj_list(adj_list, lanelet_polygons):
     plt.figure(figsize=(30, 25), dpi=250)
     ax = plt.gca()
-    # Plot nodes and edges
+
+    # Collect all node coordinates
+    node_coords = []
+    for parent in adj_list.keys():
+        parent_x, parent_y = parent[1], parent[2]
+        node_coords.append((parent_x, parent_y))
+
+    # Collect all edge coordinates
+    edge_coords = []
     for parent, children in adj_list.items():
-        parent_x, parent_y = parent[1], parent[2]  # Extract x, y from the node tuple
-
-        # Plot the parent node
-        plt.scatter(parent_x, parent_y, color="blue", s=1)
-
-        # Plot edges to children
+        parent_x, parent_y = parent[1], parent[2]
         for child in children:
-            child_x, child_y = child[1], child[2]  # Extract x, y from the child tuple
-            plt.plot([parent_x, child_x], [parent_y, child_y], color="blue", lw=0.3)
+            child_x, child_y = child[1], child[2]
+            edge_coords.append([(parent_x, parent_y), (child_x, child_y)])
+
+    # Plot all nodes at once
+    node_coords = np.array(node_coords)
+    plt.scatter(node_coords[:, 0], node_coords[:, 1], color="blue", s=1)
+
+    # Plot all edges at once using LineCollection
+    edge_collection = LineCollection(edge_coords, colors="blue", linewidths=0.3)
+    ax.add_collection(edge_collection)
 
     # Plot static obstacles (from on_episode_init)
     for lanelet in lanelet_polygons:
@@ -264,9 +282,7 @@ def plot_adj_list(adj_list, lanelet_polygons):
 
     output_dir = "/tmp"
     os.makedirs(output_dir, exist_ok=True)
-    filename = os.path.join(output_dir, f"adj_list.png")
-    plt.grid()
-    # plt.axis("equal")
-    plt.savefig(filename)
+    filename = os.path.join(output_dir, "adj_list_plot.png")
+    plt.savefig(filename, bbox_inches="tight")  # Save the plot with tight bounding box
     plt.close()
-    print(f"Image saved to {filename} \n")
+    print(f"Graph saved to {filename}")
