@@ -34,10 +34,13 @@ from dg_commons.sim.models import vehicle_ligths
 from dg_commons.sim.models.vehicle_ligths import LightsCmd
 from networkx import DiGraph
 from shapely.geometry import Polygon
-from .lattice import WeightedGraph
+from .graph import WeightedGraph
 from .A_star import Astar
 import time
 from matplotlib.collections import LineCollection
+
+from .motion_primitves import generate_primat
+from .graph import generate_graph
 
 
 @dataclass(frozen=True)
@@ -72,8 +75,9 @@ class Pdm4arAgent(Agent):
         self.dt = init_obs.dg_scenario.scenario.dt
 
         # additional class variables
-        self.lane_width = 2 * init_obs.goal.ref_lane.control_points[0].r
         self.lanelet_polygons = init_obs.dg_scenario.lanelet_network.lanelet_polygons
+        self.lanelet_network = init_obs.dg_scenario.lanelet_network
+        self.lane_width = 2 * init_obs.goal.ref_lane.control_points[0].r
 
     def get_commands(self, sim_obs: SimObservations) -> VehicleCommands:
         """This method is called by the simulator every dt_commands seconds (0.1s by default).
@@ -96,31 +100,19 @@ class Pdm4arAgent(Agent):
             dt=Decimal(self.dt), n_steps=n_steps, n_vel=n_vel, n_steer=n_steer, vp=self.vp
         )
         mpg = MotionPrimitivesGenerator(param=mpg_params, vehicle_dynamics=bd.successor, vehicle_param=self.vp)
-        end_states_traj, controls_traj = self.generate_primat(
+        end_states_traj, controls_traj = generate_primat(
             x0=current_state, mpg=mpg, steer_range=steer_range, n_steer=n_steer
         )
 
         # build graph
         depth = 8  # TODO: default value - need to decide how deep we want our graph to be
         start = time.time()
-        graph = self.generate_graph(current_state, end_states_traj, depth)
+        weighted_graph = generate_graph(current_state, end_states_traj, controls_traj, depth, self.lanelet_network)
         end = time.time()
         print(f"Generating the graph took {end - start} seconds.")
 
-        # retrieve adjacency list for weighted graph
         start = time.time()
-        adj_list = self.networkx_2_adjacencylist(graph)
-        end = time.time()
-        print(f"Conversion networkx graph to adjacency list took {end - start} seconds.")
-
-        # convert DIgraph to our costum WeightedGraph
-        start = time.time()
-        weighted_graph = self.digraph_to_weighted_graph(graph)
-        end = time.time()
-        print(f"Conversion DI graph to weighted graph took {end - start} seconds.")
-
-        start = time.time()
-        plot_adj_list(adj_list, self.lanelet_polygons)
+        plot_adj_list(weighted_graph.adj_list, self.lanelet_polygons)
         end = time.time()
         print(f"Plotting the graph took {end - start} seconds.")
 
@@ -132,117 +124,8 @@ class Pdm4arAgent(Agent):
             acc=controls_traj[0][0].acc, ddelta=controls_traj[0][0].ddelta, lights=LightsCmd("turn_left")
         )
 
-    def digraph_to_weighted_graph(self, graph: DiGraph) -> WeightedGraph:
-        """
-        Converts a NetworkX DiGraph to the custom WeightedGraph structure.
-        """
-        # Extract adjacency list
-        adj_list = {node: set(neighbors.keys()) for node, neighbors in graph.adjacency()}
 
-        # Extract edge weights
-        weights = {(u, v): data.get('weight', 1.0) for u, v, data in graph.edges(data=True)}
-
-        # Create WeightedGraph
-        return WeightedGraph(adj_list, weights, graph)
-
-    def generate_primat(
-        self,
-        x0: VehicleState,
-        mpg: MotionPrimitivesGenerator,
-        steer_range: float,
-        n_steer: int,
-    ) -> tuple[List[VehicleState], List[List[VehicleCommands]]]:
-        """
-        Reimplement method mpg.generate(x) to generate motion primitives specifically for our problem.
-        """
-        end_states_traj = []
-        controls_traj = []
-
-        # create samples in user-defined range - assume constant velocity and variable steering angles
-        v_samples = np.array([x0.vx])
-        sa_samples = np.linspace(
-            *(x0.delta - steer_range, x0.delta + steer_range, n_steer)
-        )  # TODO: need to check if steering angle is valid
-
-        for v_sample, sa_sample in product(v_samples, sa_samples):
-            # calculate acceleration and steering angle rate
-            horizon = float(mpg.param.dt * mpg.param.n_steps)
-            acc = (v_sample - x0.vx) / horizon
-            sa_rate = (sa_sample - x0.delta) / horizon
-
-            # vehicle commands to follow trajectory
-            cmds = VehicleCommands(acc=acc, ddelta=sa_rate)
-
-            # initial values
-            states = [x0]
-            control_inputs = [cmds]
-            next_state = x0
-
-            for _ in range(1, mpg.param.n_steps + 1):
-                next_state = mpg.vehicle_dynamics(next_state, cmds, float(mpg.param.dt))
-                states.append(next_state)
-                control_inputs.append(cmds)
-
-            end_states_traj.append(next_state)
-            controls_traj.append(control_inputs)
-
-        return end_states_traj, controls_traj
-
-    def generate_graph(self, current_state: VehicleState, end_states_traj: List[VehicleState], depth: int) -> DiGraph:
-        graph = DiGraph()
-
-        # calculate deltas
-        deltas = [
-            (state.x - current_state.x, state.y - current_state.y, state.psi - current_state.psi)
-            for state in end_states_traj
-        ]
-
-        # add root node
-        graph.add_node((0, current_state.x, current_state.y, current_state.psi))  # (level, x, y)
-
-        # recursive function to generate children
-        def add_children(level, x, y, psi):
-            if level >= depth:
-                return
-
-            for dx, dy, dpsi in deltas:
-                # check if child is within lane boundaries TODO: add clearance to road boundaries
-                position = np.array([x + dx * np.cos(psi) - dy * np.sin(psi), y + dy * np.cos(psi) + dx * np.sin(psi)])
-                # lanelet_id = self.lanelet_network.find_lanelet_by_position([position])
-                # if not lanelet_id[0]:
-                #     continue
-
-                # only add child if psi is acceptable
-                # if (
-                #     psi + dpsi > np.pi / 4 or psi + dpsi < -np.pi / 4
-                # ):  # TODO: heuristically chose 45deg, needs refinement
-                #     continue
-
-                child = (
-                    level + 1,
-                    x + dx * np.cos(psi) - dy * np.sin(psi),
-                    y + dy * np.cos(psi) + dx * np.sin(psi),
-                    psi + dpsi,
-                )
-                graph.add_node(child)
-                graph.add_edge((level, x, y, psi), child)
-
-                # recursively add children for child
-                add_children(child[0], child[1], child[2], child[3])  # (level, x, y, psi)
-
-        add_children(0, current_state.x, current_state.y, current_state.psi)
-
-        return graph
-
-    def networkx_2_adjacencylist(self, graph: DiGraph) -> dict:
-        adj_list = dict()
-        atlas = graph.adj._atlas
-        for n in atlas.keys():
-            adj_list[n] = set(atlas[n].keys())
-        return adj_list
-
-
-### BACKUP ###
+### ADDITIONAL HELPER FUNCTIONS ###
 import matplotlib.pyplot as plt
 import os
 

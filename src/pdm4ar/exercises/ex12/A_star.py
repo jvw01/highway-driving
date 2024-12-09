@@ -1,4 +1,4 @@
-from .lattice import WeightedGraph
+from .graph import WeightedGraph
 import heapq
 from abc import ABC, abstractmethod
 from typing import Optional, List, TypeVar
