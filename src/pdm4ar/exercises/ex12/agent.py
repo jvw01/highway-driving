@@ -20,6 +20,7 @@ from dg_commons import logger, Timestamp, LinSpaceTuple
 import math
 from dg_commons.sim.models.model_utils import apply_full_acceleration_limits
 from dg_commons.dynamics import BicycleDynamics
+from matplotlib import markers
 import numpy as np
 from sympy import Mul, primitive
 from dataclasses import dataclass
@@ -31,7 +32,7 @@ from dg_commons.planning.trajectory import Trajectory
 from dg_commons.sim.models import vehicle_ligths
 from dg_commons.sim.models.vehicle_ligths import LightsCmd
 from networkx import DiGraph
-import networkx as nx
+from shapely.geometry import Polygon
 
 
 @dataclass(frozen=True)
@@ -46,8 +47,8 @@ class Pdm4arAgent(Agent):
 
     name: PlayerName
     goal: PlanningGoal
-    sg: VehicleGeometry
-    sp: VehicleParameters
+    vg: VehicleGeometry
+    vp: VehicleParameters
     dt: Decimal
     lane_width: float
 
@@ -61,13 +62,13 @@ class Pdm4arAgent(Agent):
         Do not modify the signature of this method."""
         self.name = init_obs.my_name
         self.goal = init_obs.goal
-        self.sg = init_obs.model_geometry
-        self.sp = init_obs.model_params
+        self.vg = init_obs.model_geometry
+        self.vp = init_obs.model_params
         self.dt = init_obs.dg_scenario.scenario.dt
 
         # additional class variables
         self.lane_width = 2 * init_obs.goal.ref_lane.control_points[0].r
-        self.static_obs = init_obs.dg_scenario.static_obstacles
+        self.lanelet_polygons = init_obs.dg_scenario.lanelet_network.lanelet_polygons
 
     def get_commands(self, sim_obs: SimObservations) -> VehicleCommands:
         """This method is called by the simulator every dt_commands seconds (0.1s by default).
@@ -82,24 +83,25 @@ class Pdm4arAgent(Agent):
         n_vel = 1
         steer_range = 0.3
         n_steer = 3
-        n_steps = 10
+        n_steps = 5
 
         current_state = sim_obs.players["Ego"].state  # type: ignore
-        bd = BicycleDynamics(self.sg, self.sp)
+        bd = BicycleDynamics(self.vg, self.vp)
         mpg_params = MPGParam.from_vehicle_parameters(
-            dt=Decimal(self.dt), n_steps=n_steps, n_vel=n_vel, n_steer=n_steer, vp=self.sp
+            dt=Decimal(self.dt), n_steps=n_steps, n_vel=n_vel, n_steer=n_steer, vp=self.vp
         )
-        mpg = MotionPrimitivesGenerator(param=mpg_params, vehicle_dynamics=bd.successor, vehicle_param=self.sp)
+        mpg = MotionPrimitivesGenerator(param=mpg_params, vehicle_dynamics=bd.successor, vehicle_param=self.vp)
         end_states_traj, controls_traj = self.generate_primat(
             x0=current_state, mpg=mpg, steer_range=steer_range, n_steer=n_steer
         )
 
         # build graph
         depth = 8  # TODO: default value - need to decide how deep we want our graph to be
-        graph = self.generate_graph(
-            current_state, end_states_traj, depth
-        )  # TODO: add lane boundaries for visualization
-        plot_graph(graph, self.static_obs)
+        graph = self.generate_graph(current_state, end_states_traj, depth)
+
+        # retrieve adjacency list for weighted graph
+        adj_list = self.networkx_2_adjacencylist(graph)
+        plot_adj_list(adj_list, self.lanelet_polygons)
 
         return VehicleCommands(
             acc=controls_traj[0][0].acc, ddelta=controls_traj[0][0].ddelta, lights=LightsCmd("turn_left")
@@ -155,27 +157,43 @@ class Pdm4arAgent(Agent):
         graph = DiGraph()
 
         # calculate deltas
-        deltas = [(state.x - current_state.x, state.y - current_state.y) for state in end_states_traj]
+        deltas = [
+            (state.x - current_state.x, state.y - current_state.y, state.psi - current_state.psi)
+            for state in end_states_traj
+        ]
 
         # add root node
-        graph.add_node((0, current_state.x, current_state.y))  # (level, x, y)
+        graph.add_node((0, current_state.x, current_state.y, current_state.psi))  # (level, x, y)
 
         # recursive function to generate children
-        def add_children(level, x, y):
+        def add_children(level, x, y, psi):
             if level >= depth:
                 return
 
-            for i, (dx, dy) in enumerate(deltas):
-                child = (level + 1, x + dx, y + dy, i)  # include index for unique child identification
+            # TODO: need to check if child is within lane boundaries (lane boundaries)
+            for dx, dy, dpsi in deltas:
+                # only add child if psi is acceptable
+                # if (
+                #     psi + dpsi > np.pi / 4 or psi + dpsi < -np.pi / 4
+                # ):  # TODO: heuristically choose 45deg, needs refinement
+                #     continue
+                child = (level + 1, x + dx, y + dy, psi + dpsi)
                 graph.add_node(child)
-                graph.add_edge((level, x, y), child)
+                graph.add_edge((level, x, y, psi), child)
 
                 # recursively add children for child
-                add_children(child[0], child[1], child[2])  # (level, x, y)
+                add_children(child[0], child[1], child[2], child[3])  # (level, x, y, psi)
 
-        add_children(0, current_state.x, current_state.y)
+        add_children(0, current_state.x, current_state.y, current_state.psi)
 
         return graph
+
+    def networkx_2_adjacencylist(self, graph: DiGraph) -> dict:
+        adj_list = dict()
+        atlas = graph.adj._atlas
+        for n in atlas.keys():
+            adj_list[n] = set(atlas[n].keys())
+        return adj_list
 
 
 ### BACKUP ###
@@ -183,22 +201,33 @@ import matplotlib.pyplot as plt
 import os
 
 
-def plot_graph(graph: DiGraph, static_obs):
-    # Extract positions for each node (x, y)
-    pos = {node: (node[1], node[2]) for node in graph.nodes}  # (x, y) coordinates from nodes
+def plot_adj_list(adj_list, lanelet_polygons):
+    plt.figure(figsize=(30, 25), dpi=250)
+    ax = plt.gca()
+    # Plot nodes and edges
+    for parent, children in adj_list.items():
+        parent_x, parent_y = parent[1], parent[2]  # Extract x, y from the node tuple
 
-    # Draw the graph
+        # Plot the parent node
+        plt.scatter(parent_x, parent_y, color="blue", s=1)
+
+        # Plot edges to children
+        for child in children:
+            child_x, child_y = child[1], child[2]  # Extract x, y from the child tuple
+            plt.plot([parent_x, child_x], [parent_y, child_y], color="blue", lw=0.3)
+
+    # Plot static obstacles (from on_episode_init)
+    for lanelet in lanelet_polygons:
+        x, y = lanelet.shapely_object.exterior.xy
+        plt.plot(x, y, linestyle="-", linewidth=0.8, color="darkorchid")
+
+    ax.set_aspect("equal", adjustable="box")
+
     output_dir = "/tmp"
     os.makedirs(output_dir, exist_ok=True)
-    filename = os.path.join(output_dir, f"graph.png")
-    plt.figure(figsize=(10, 8))
-    # plot graph
-    nx.draw(graph, pos, with_labels=False, node_size=500, node_color="lightblue", font_size=8, arrowsize=15)
-    # plot static obstacles (from on_episode_init)
-    for obs in static_obs:
-        x, y = obs.shape.xy
-        plt.plot(x, y, linestyle="-", linewidth=2, color="darkorchid")
+    filename = os.path.join(output_dir, f"adj_list.png")
     plt.grid()
+    # plt.axis("equal")
     plt.savefig(filename)
     plt.close()
     print(f"Image saved to {filename} \n")
