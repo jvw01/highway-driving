@@ -34,11 +34,11 @@ from dg_commons.sim.models import vehicle_ligths
 from dg_commons.sim.models.vehicle_ligths import LightsCmd
 from networkx import DiGraph
 from shapely.geometry import Polygon
-from .graph import WeightedGraph
-from .A_star import Astar
 import time
 from matplotlib.collections import LineCollection
 
+from .graph import WeightedGraph
+from .A_star import Astar
 from .motion_primitves import generate_primat
 from .graph import generate_graph
 
@@ -93,6 +93,14 @@ class Pdm4arAgent(Agent):
         :return:
         """
         # TODO: default values for testing
+
+        # get current lane by using the current position
+        current_pos = np.array([sim_obs.players[self.name].state.x, sim_obs.players[self.name].state.y])
+        try:
+            self.current_lanelet_id = self.lanelet_network.find_lanelet_by_position([current_pos])[0][0]
+        except IndexError:
+            print("No lanelet found or out of bounds")
+
         current_state = sim_obs.players["Ego"].state  # type: ignore
 
         if self.further_initailization:
@@ -134,7 +142,7 @@ class Pdm4arAgent(Agent):
 
         # astar_solver = Astar.path(graph=weighted_graph)
         # TODO: need to define finite_horizon_goal
-        # shortest_path = astar_solver.path(start=current_state, goal=finite_horizon_goal)
+        # shortest_path = astar_solver.path(start=current_state, goal=finite_horizon_goal, lanelet_network=self.lanelet_network, lanelet_id=self.current_lanelet_id)
 
         return VehicleCommands(
             acc=controls_traj[0][0].acc, ddelta=controls_traj[0][0].ddelta, lights=LightsCmd("turn_left")
