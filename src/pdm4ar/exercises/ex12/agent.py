@@ -1,3 +1,4 @@
+from hmac import new
 import random
 from dataclasses import dataclass
 from tracemalloc import start
@@ -129,7 +130,11 @@ class Pdm4arAgent(Agent):
                             sim_obs.players[player].occupancy,
                         )
                     )
-            
+
+            # test1 = (dyn_obs_current[1][0], dyn_obs_current[1][1])
+            # test2 = self.propagate_state(dyn_obs_current[1][0], dyn_obs_current[1][1], dyn_obs_current[1][2], depth)
+            # plot_other_cars(test1, test2, self.lanelet_network.lanelet_polygons)
+
             weighted_graph = generate_graph(
                 current_state,
                 end_states_traj,
@@ -138,8 +143,6 @@ class Pdm4arAgent(Agent):
                 self.lanelet_network,
                 self.half_lane_width,
                 self.lane_orientation,
-                current_occupancy,
-                dyn_obs_current,
             )
 
             # astar_solver = Astar.path(graph=weighted_graph)
@@ -156,3 +159,43 @@ class Pdm4arAgent(Agent):
         rnd_ddelta = (random.random() - 0.5) * self.params.param1
 
         return VehicleCommands(acc=rnd_acc, ddelta=rnd_ddelta)
+
+    def propagate_state(self, x_pos: float, y_pos: float, vx: float, depth: int) -> list:
+        propagated_states = []
+        time_horizon = self.n_steps * float(self.dt)
+        s = vx * time_horizon  # note: cars do not change lanes
+        for i in range(depth):
+            propagated_states.append(
+                (x_pos + i * s * math.cos(self.lane_orientation), y_pos + i * s * math.sin(self.lane_orientation))
+            )
+
+        return propagated_states
+
+
+### ADDITIONAL HELPER FUNCTIONS ###
+import matplotlib.pyplot as plt
+import os
+import time
+
+
+def plot_other_cars(init_pos, future_pos, lanelet_polygons):
+    plt.figure(figsize=(30, 25), dpi=250)
+    ax = plt.gca()
+
+    # Plot static obstacles (from on_episode_init)
+    for lanelet in lanelet_polygons:
+        x, y = lanelet.shapely_object.exterior.xy
+        plt.plot(x, y, linestyle="-", linewidth=0.8, color="darkorchid")
+
+    plt.scatter(init_pos[0], init_pos[1], color="red", s=10)
+    for pos in future_pos:
+        plt.scatter(pos[0], pos[1], color="red", s=10)
+
+    ax.set_aspect("equal", adjustable="box")
+
+    output_dir = "/tmp"
+    os.makedirs(output_dir, exist_ok=True)
+    filename = os.path.join(output_dir, "other_cars.png")
+    plt.savefig(filename, bbox_inches="tight")  # Save the plot with tight bounding box
+    plt.close()
+    print(f"Graph saved to {filename}")

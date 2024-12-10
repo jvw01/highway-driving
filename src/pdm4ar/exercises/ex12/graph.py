@@ -46,21 +46,6 @@ class WeightedGraph:
             raise EdgeNotFound(f"Cannot find weight for edge: {(u, v)}")
 
 
-def create_spatial_index(dynamic_obstacles):
-    idx = index.Index()
-    for i, obstacle in enumerate(dynamic_obstacles):
-        idx.insert(i, obstacle[3].bounds)
-    return idx
-
-
-def check_for_collisions(car_occupancy, dynamic_obstacles, spatial_index):
-    potential_collisions = spatial_index.intersection(car_occupancy.bounds)
-    for i in potential_collisions:
-        if car_occupancy.intersects(dynamic_obstacles[i]):
-            return True
-    return False
-
-
 def generate_graph(
     current_state: VehicleState,
     end_states_traj: List[VehicleState],
@@ -69,8 +54,6 @@ def generate_graph(
     lanelet_network: LaneletNetwork,
     half_lane_width: float,
     lane_orientation: float,
-    current_occupancy: Polygon,
-    dyn_obs_current: list,
 ) -> WeightedGraph:
     start = time.time()
 
@@ -82,16 +65,11 @@ def generate_graph(
         for state in end_states_traj
     ]
 
-    occupancy_polygons = [current_occupancy]
-
-    # Create spatial index for dynamic obstacles
-    spatial_index = create_spatial_index(dyn_obs_current)
-
     # add root node
     graph.add_node((0, current_state.x, current_state.y, current_state.psi))
 
     # recursive function to generate children
-    def add_children(level, x, y, psi, current_occupancy):
+    def add_children(level, x, y, psi):
         if level >= depth:
             return
 
@@ -141,12 +119,6 @@ def generate_graph(
             # ):  # TODO: necessary?, heuristically chose 45deg, needs refinement
             #     continue
 
-            # TODO: check collision with other vehicles
-            current_occupancy = calc_new_occupancy(current_occupancy, delta_pos, dpsi)
-            if check_for_collisions(current_occupancy, dyn_obs_current, spatial_index):
-                continue
-            occupancy_polygons.append(current_occupancy)
-
             # create new child node
             cmds = controls_traj[i]  # control commands to get from parent to child
             child = (
@@ -161,9 +133,9 @@ def generate_graph(
             graph.add_edge((level, x, y, psi), child)
 
             # recursively add children for child
-            add_children(child[0], child[1], child[2], child[3], current_occupancy)
+            add_children(child[0], child[1], child[2], child[3])
 
-    add_children(0, current_state.x, current_state.y, current_state.psi, current_occupancy)
+    add_children(0, current_state.x, current_state.y, current_state.psi)
 
     # convert networkx DiGraph to the custom WeightedGraph structure
     adj_list = {node: set(neighbors.keys()) for node, neighbors in graph.adjacency()}
@@ -173,7 +145,7 @@ def generate_graph(
     print(f"Generating the graph took {end - start} seconds.")
 
     start = time.time()
-    plot_adj_list(adj_list, lanelet_network.lanelet_polygons, occupancy_polygons)
+    plot_adj_list(adj_list, lanelet_network.lanelet_polygons)
     end = time.time()
     print(f"Plotting the graph took {end - start} seconds.")
 
@@ -192,7 +164,7 @@ import time
 from matplotlib.collections import LineCollection
 
 
-def plot_adj_list(adj_list, lanelet_polygons, occupancy_polygons):
+def plot_adj_list(adj_list, lanelet_polygons):
     plt.figure(figsize=(30, 25), dpi=250)
     ax = plt.gca()
 
@@ -222,12 +194,6 @@ def plot_adj_list(adj_list, lanelet_polygons, occupancy_polygons):
     for lanelet in lanelet_polygons:
         x, y = lanelet.shapely_object.exterior.xy
         plt.plot(x, y, linestyle="-", linewidth=0.8, color="darkorchid")
-
-    # Plot occupancy polygons with different colors
-    cmap = plt.get_cmap("tab20")
-    for i, occupancy in enumerate(occupancy_polygons):
-        x, y = occupancy.exterior.xy
-        plt.plot(x, y, linestyle="-", linewidth=2, color=cmap(i % 20))
 
     ax.set_aspect("equal", adjustable="box")
 
