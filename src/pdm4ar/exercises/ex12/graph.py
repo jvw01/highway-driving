@@ -4,6 +4,7 @@ import numpy as np
 from dg_commons.sim.models.vehicle import VehicleState
 from typing import List
 from dg_commons.sim.models.vehicle import VehicleCommands
+from dg_commons.maps import DgLanelet
 
 # A generic type for nodes in a graph.
 X = TypeVar("X")
@@ -45,6 +46,8 @@ def generate_graph(
     controls_traj: List[List[VehicleCommands]],
     depth: int,
     lanelet_network,
+    half_lane_width: float,
+    lane_orientation: float,
 ) -> WeightedGraph:
     graph = DiGraph()
 
@@ -63,11 +66,36 @@ def generate_graph(
             return
 
         for i, (dx, dy, dpsi) in enumerate(deltas):
-            # check if child is within lane boundaries TODO: add clearance to road boundaries
-            position = np.array([x + dx * np.cos(psi) - dy * np.sin(psi), y + dy * np.cos(psi) + dx * np.sin(psi)])
+            # check if child is within lane boundaries
+            position = np.array(
+                [
+                    x + dx * np.cos(psi) - dy * np.sin(psi),
+                    y + dy * np.cos(psi) + dx * np.sin(psi),
+                ]
+            )
             lanelet_id = lanelet_network.find_lanelet_by_position([position])
             if not lanelet_id[0]:
                 continue
+
+            # add clearance to road boundaries
+            lanelet = lanelet_network.find_lanelet_by_id(lanelet_id[0][0])
+            no_adjacent_left = lanelet.adj_left is None
+            no_adjacent_right = lanelet.adj_right is None
+            if no_adjacent_left:
+                position[0] += half_lane_width * np.sin(np.abs(lane_orientation))  # TODO: angle
+                position[1] += half_lane_width * np.cos(np.abs(lane_orientation))  # TODO: angle
+                lanelet_id = lanelet_network.find_lanelet_by_position([position])
+                if not lanelet_id[0]:
+                    continue
+
+            elif no_adjacent_right:
+                position[0] -= half_lane_width * np.sin(np.abs(lane_orientation))  # TODO: angle
+                position[1] -= half_lane_width * np.cos(np.abs(lane_orientation))  # TODO: angle
+                lanelet_id = lanelet_network.find_lanelet_by_position([position])
+                if not lanelet_id[0]:
+                    continue
+
+            # half_lane_width * np.cos(lane_orientation)
 
             # only add child if psi is acceptable
             if (

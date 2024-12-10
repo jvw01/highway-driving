@@ -77,7 +77,11 @@ class Pdm4arAgent(Agent):
         # additional class variables
         self.lanelet_polygons = init_obs.dg_scenario.lanelet_network.lanelet_polygons
         self.lanelet_network = init_obs.dg_scenario.lanelet_network
-        self.lane_width = 2 * init_obs.goal.ref_lane.control_points[0].r
+        self.half_lane_width = init_obs.goal.ref_lane.control_points[0].r
+        # self.lane_orientation = init_obs.goal.ref_lane.control_points[
+        #     0
+        # ].q.theta  # note: the lane is not entirely straight
+        self.further_initailization = True  # boolean to further initialize parameters in the first call of get_commands
 
     def get_commands(self, sim_obs: SimObservations) -> VehicleCommands:
         """This method is called by the simulator every dt_commands seconds (0.1s by default).
@@ -89,25 +93,37 @@ class Pdm4arAgent(Agent):
         :return:
         """
         # TODO: default values for testing
-        n_vel = 1
-        steer_range = 0.3
-        n_steer = 3
-        n_steps = 5
-
         current_state = sim_obs.players["Ego"].state  # type: ignore
+
+        if self.further_initailization:
+            self.n_vel = 1
+            self.steer_range = 0.3
+            self.n_steer = 3
+            self.n_steps = 5
+            self.lane_orientation = current_state.psi # assuming that lane orientation == initial orientation vehicle
+            self.further_initailization = False
+
         bd = BicycleDynamics(self.vg, self.vp)
         mpg_params = MPGParam.from_vehicle_parameters(
-            dt=Decimal(self.dt), n_steps=n_steps, n_vel=n_vel, n_steer=n_steer, vp=self.vp
+            dt=Decimal(self.dt), n_steps=self.n_steps, n_vel=self.n_vel, n_steer=self.n_steer, vp=self.vp
         )
         mpg = MotionPrimitivesGenerator(param=mpg_params, vehicle_dynamics=bd.successor, vehicle_param=self.vp)
         end_states_traj, controls_traj = generate_primat(
-            x0=current_state, mpg=mpg, steer_range=steer_range, n_steer=n_steer
+            x0=current_state, mpg=mpg, steer_range=self.steer_range, n_steer=self.n_steer
         )
 
         # build graph
         depth = 8  # TODO: default value - need to decide how deep we want our graph to be
         start = time.time()
-        weighted_graph = generate_graph(current_state, end_states_traj, controls_traj, depth, self.lanelet_network)
+        weighted_graph = generate_graph(
+            current_state,
+            end_states_traj,
+            controls_traj,
+            depth,
+            self.lanelet_network,
+            self.half_lane_width,
+            self.lane_orientation,
+        )
         end = time.time()
         print(f"Generating the graph took {end - start} seconds.")
 
@@ -165,7 +181,7 @@ def plot_adj_list(adj_list, lanelet_polygons):
 
     output_dir = "/tmp"
     os.makedirs(output_dir, exist_ok=True)
-    filename = os.path.join(output_dir, "adj_list_plot.png")
+    filename = os.path.join(output_dir, "graph.png")
     plt.savefig(filename, bbox_inches="tight")  # Save the plot with tight bounding box
     plt.close()
     print(f"Graph saved to {filename}")
