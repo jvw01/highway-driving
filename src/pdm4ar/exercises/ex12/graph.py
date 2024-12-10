@@ -58,7 +58,7 @@ def generate_graph(
     ]
 
     # add root node
-    graph.add_node((0, current_state.x, current_state.y, current_state.psi))  # (level, x, y)
+    graph.add_node((0, current_state.x, current_state.y, current_state.psi))  # (level, x, y, psi)
 
     # recursive function to generate children
     def add_children(level, x, y, psi):
@@ -69,8 +69,8 @@ def generate_graph(
             # check if child is within lane boundaries
             position = np.array(
                 [
-                    x + dx * np.cos(psi) - dy * np.sin(psi),
-                    y + dy * np.cos(psi) + dx * np.sin(psi),
+                    x + dx * np.cos(psi - lane_orientation) - dy * np.sin(psi - lane_orientation),
+                    y + dy * np.cos(psi - lane_orientation) + dx * np.sin(psi - lane_orientation),
                 ]
             )
             lanelet_id = lanelet_network.find_lanelet_by_position([position])
@@ -82,15 +82,24 @@ def generate_graph(
             no_adjacent_left = lanelet.adj_left is None
             no_adjacent_right = lanelet.adj_right is None
             if no_adjacent_left:
-                position[0] += half_lane_width * np.sin(np.abs(lane_orientation))  # TODO: angle
-                position[1] += half_lane_width * np.cos(np.abs(lane_orientation))  # TODO: angle
+                # alternative way to calculate half_lane_width
+                # left_boundary = lanelet.left_vertices
+                # right_boundary = lanelet.right_vertices
+                # widths = [
+                #     np.linalg.norm(np.array([left[0], left[1]]) - np.array([right[0], right[1]]))
+                #     for left, right in zip(left_boundary, right_boundary)
+                # ]
+                # average_width = np.mean(widths)
+                # half_lane_width = average_width / 2
+                position[0] -= half_lane_width * np.sin(psi - lane_orientation)
+                position[1] += half_lane_width * np.cos(psi - lane_orientation)
                 lanelet_id = lanelet_network.find_lanelet_by_position([position])
                 if not lanelet_id[0]:
                     continue
 
             elif no_adjacent_right:
-                position[0] -= half_lane_width * np.sin(np.abs(lane_orientation))  # TODO: angle
-                position[1] -= half_lane_width * np.cos(np.abs(lane_orientation))  # TODO: angle
+                position[0] += half_lane_width * np.sin(psi - lane_orientation)
+                position[1] -= half_lane_width * np.cos(psi - lane_orientation)
                 lanelet_id = lanelet_network.find_lanelet_by_position([position])
                 if not lanelet_id[0]:
                     continue
@@ -98,16 +107,16 @@ def generate_graph(
             # half_lane_width * np.cos(lane_orientation)
 
             # only add child if psi is acceptable
-            if (
-                psi + dpsi > np.pi / 4 or psi + dpsi < -np.pi / 4
-            ):  # TODO: necessary?, heuristically chose 45deg, needs refinement
-                continue
+            # if (
+            #     psi + dpsi > np.pi / 4 or psi + dpsi < -np.pi / 4
+            # ):  # TODO: necessary?, heuristically chose 45deg, needs refinement
+            #     continue
 
             cmds = controls_traj[i]  # control commands to get from parent to child
             child = (
                 level + 1,
-                x + dx * np.cos(psi) - dy * np.sin(psi),
-                y + dy * np.cos(psi) + dx * np.sin(psi),
+                x + dx * np.cos(psi - lane_orientation) - dy * np.sin(psi - lane_orientation),
+                y + dy * np.cos(psi - lane_orientation) + dx * np.sin(psi - lane_orientation),
                 psi + dpsi,
                 tuple(cmds),
             )
