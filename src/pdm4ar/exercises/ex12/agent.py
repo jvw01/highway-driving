@@ -37,7 +37,6 @@ from shapely.geometry import Polygon
 from .graph import WeightedGraph
 from .A_star import Astar
 import time
-from matplotlib.collections import LineCollection
 
 from .motion_primitves import generate_primat
 from .graph import generate_graph
@@ -75,14 +74,14 @@ class Pdm4arAgent(Agent):
         self.dt = init_obs.dg_scenario.scenario.dt  # type: ignore
 
         # additional class variables
-        self.lanelet_polygons = init_obs.dg_scenario.lanelet_network.lanelet_polygons  # type: ignore
+        # self.lanelet_polygons = init_obs.dg_scenario.lanelet_network.lanelet_polygons  # type: ignore
         self.lanelet_network = init_obs.dg_scenario.lanelet_network  # type: ignore
         self.half_lane_width = init_obs.goal.ref_lane.control_points[0].r  # type: ignore
         # self.lane_orientation = init_obs.goal.ref_lane.control_points[
         #     0
         # ].q.theta  # note: the lane is not entirely straight
         self.further_initialization = True  # boolean to further initialize parameters in the first call of get_commands
-        self.test = True  # TODO: only testing variable
+        self.recompute = True  # boolean value that indicates if the graph needs to be recomputed
 
     def get_commands(self, sim_obs: SimObservations) -> VehicleCommands:
         """This method is called by the simulator every dt_commands seconds (0.1s by default).
@@ -93,31 +92,20 @@ class Pdm4arAgent(Agent):
         :param sim_obs:
         :return:
         """
-        current_state = sim_obs.players["Ego"].state  # type: ignore
-        current_occupancy = sim_obs.players["Ego"].occupancy  # type: ignore
+        if self.recompute:
+            current_state = sim_obs.players["Ego"].state  # type: ignore
 
-        dyn_obs_current = []
-        for player in sim_obs.players:
-            if player != "Ego":
-                dyn_obs_current.append(
-                    (
-                        sim_obs.players[player].state.x,  # type: ignore
-                        sim_obs.players[player].state.y,  # type: ignore
-                        sim_obs.players[player].state.vx,  # type: ignore
-                        sim_obs.players[player].occupancy,
-                    )
-                )
+            if self.further_initialization:
+                # TODO: default values for testing
+                self.n_vel = 1
+                self.steer_range = 0.3
+                self.n_steer = 3
+                self.n_steps = 5
+                self.lane_orientation = (
+                    current_state.psi
+                )  # assuming that lane orientation == initial orientation vehicle
+                self.further_initialization = False
 
-        if self.further_initialization:
-            # TODO: default values for testing
-            self.n_vel = 1
-            self.steer_range = 0.3
-            self.n_steer = 3
-            self.n_steps = 5
-            self.lane_orientation = current_state.psi # assuming that lane orientation == initial orientation vehicle
-            self.further_initialization = False
-
-        if self.test:
             bd = BicycleDynamics(self.vg, self.vp)
             mpg_params = MPGParam.from_vehicle_parameters(
                 dt=Decimal(self.dt), n_steps=self.n_steps, n_vel=self.n_vel, n_steer=self.n_steer, vp=self.vp
@@ -129,7 +117,19 @@ class Pdm4arAgent(Agent):
 
             # build graph
             depth = 8  # TODO: default value - need to decide how deep we want our graph to be
-            start = time.time()
+            current_occupancy = sim_obs.players["Ego"].occupancy  # type: ignore
+            dyn_obs_current = []
+            for player in sim_obs.players:
+                if player != "Ego":
+                    dyn_obs_current.append(
+                        (
+                            sim_obs.players[player].state.x,  # type: ignore
+                            sim_obs.players[player].state.y,  # type: ignore
+                            sim_obs.players[player].state.vx,  # type: ignore
+                            sim_obs.players[player].occupancy,
+                        )
+                    )
+            
             weighted_graph = generate_graph(
                 current_state,
                 end_states_traj,
@@ -138,20 +138,15 @@ class Pdm4arAgent(Agent):
                 self.lanelet_network,
                 self.half_lane_width,
                 self.lane_orientation,
+                current_occupancy,
+                dyn_obs_current,
             )
-            end = time.time()
-            print(f"Generating the graph took {end - start} seconds.")
-
-            start = time.time()
-            plot_adj_list(weighted_graph.adj_list, self.lanelet_polygons)
-            end = time.time()
-            print(f"Plotting the graph took {end - start} seconds.")
 
             # astar_solver = Astar.path(graph=weighted_graph)
             # TODO: need to define finite_horizon_goal
             # shortest_path = astar_solver.path(start=current_state, goal=finite_horizon_goal)
 
-            self.test = False
+            self.recompute = False
 
         # return VehicleCommands(
         #     acc=controls_traj[0][0].acc, ddelta=controls_traj[0][0].ddelta, lights=LightsCmd("turn_left")
@@ -161,49 +156,3 @@ class Pdm4arAgent(Agent):
         rnd_ddelta = (random.random() - 0.5) * self.params.param1
 
         return VehicleCommands(acc=rnd_acc, ddelta=rnd_ddelta)
-
-
-### ADDITIONAL HELPER FUNCTIONS ###
-import matplotlib.pyplot as plt
-import os
-
-
-def plot_adj_list(adj_list, lanelet_polygons):
-    plt.figure(figsize=(30, 25), dpi=250)
-    ax = plt.gca()
-
-    # Collect all node coordinates
-    node_coords = []
-    for parent in adj_list.keys():
-        parent_x, parent_y = parent[1], parent[2]
-        node_coords.append((parent_x, parent_y))
-
-    # Collect all edge coordinates
-    edge_coords = []
-    for parent, children in adj_list.items():
-        parent_x, parent_y = parent[1], parent[2]
-        for child in children:
-            child_x, child_y = child[1], child[2]
-            edge_coords.append([(parent_x, parent_y), (child_x, child_y)])
-
-    # Plot all nodes at once
-    node_coords = np.array(node_coords)
-    plt.scatter(node_coords[:, 0], node_coords[:, 1], color="blue", s=1)
-
-    # Plot all edges at once using LineCollection
-    edge_collection = LineCollection(edge_coords, colors="blue", linewidths=0.3)
-    ax.add_collection(edge_collection)
-
-    # Plot static obstacles (from on_episode_init)
-    for lanelet in lanelet_polygons:
-        x, y = lanelet.shapely_object.exterior.xy
-        plt.plot(x, y, linestyle="-", linewidth=0.8, color="darkorchid")
-
-    ax.set_aspect("equal", adjustable="box")
-
-    output_dir = "/tmp"
-    os.makedirs(output_dir, exist_ok=True)
-    filename = os.path.join(output_dir, "graph.png")
-    plt.savefig(filename, bbox_inches="tight")  # Save the plot with tight bounding box
-    plt.close()
-    print(f"Graph saved to {filename}")
