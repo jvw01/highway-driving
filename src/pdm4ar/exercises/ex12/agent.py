@@ -70,7 +70,7 @@ class Pdm4arAgent(Agent):
     K_dist: float = 0.1
     K_delta: float = 2
     # okish results for P-only: k_psi=1, k_dist=0.1, k_delta=2
-    K_d_psi: float = 0.1
+    K_d_psi: float = 0.5  # tried: 0.1, 0.5, already 0.1 helps to stabilize
     K_d_dist: float = 0.1
     K_d_delta: float = 0.1
     pure_pursuit: PurePursuit
@@ -144,18 +144,14 @@ class Pdm4arAgent(Agent):
         # return VehicleCommands(
         #     acc=controls_traj[0][0].acc, ddelta=controls_traj[0][0].ddelta, lights=LightsCmd("turn_left")
         # )
-        if float(sim_obs.time) < 0.6:
-            return VehicleCommands(acc=0.0, ddelta=-0.3)
+        # if float(sim_obs.time) < 0.7:
+        #     return VehicleCommands(acc=0.0, ddelta=-0.3)
         # return VehicleCommands(
         #     acc=0.0, ddelta=self.spurassistehaltent(current_state, self.K_psi, self.K_dist, self.K_delta)
         # )  # , lights=LightsCmd("turn_left"))
-        return VehicleCommands(
-            0.0, self.spurhalteassistent(current_state, self.K_psi, self.K_dist, self.K_delta, float(sim_obs.time))
-        )
+        return VehicleCommands(0.0, 0.0)  # self.spurhalteassistent(current_state, float(sim_obs.time)))
 
-    def spurhalteassistent(
-        self, current_state: VehicleState, K_psi: float, K_dist: float, K_delta: float, t: float
-    ) -> float:
+    def spurhalteassistent(self, current_state: VehicleState, t: float) -> float:
         cur_lanelet_id = self.lanelet_network.find_lanelet_by_position([np.array([current_state.x, current_state.y])])
         if not cur_lanelet_id[0]:
             print("No lanelet found")
@@ -177,7 +173,9 @@ class Pdm4arAgent(Agent):
             self.last_dist = dist
             self.last_dpsi = dpsi
             self.last_delta = current_state.delta
-            return -K_psi * dpsi - K_dist * dist - K_delta * current_state.delta
+            return (
+                -1 * dpsi - 0.1 * dist - 2 * current_state.delta  # hardcoded to tune the PD controller
+            )  # -self.K_psi * dpsi - self.K_dist * dist - self.K_delta * current_state.delta
         d_dist = (dist - self.last_dist) / float(self.dt)
         d_dpsi = (dpsi - self.last_dpsi) / float(self.dt)
         d_delta = (current_state.delta - self.last_delta) / float(self.dt)
@@ -186,11 +184,11 @@ class Pdm4arAgent(Agent):
         self.last_delta = current_state.delta
 
         ddelta = (
-            -K_psi * dpsi
+            -self.K_psi * dpsi
             - self.K_d_psi * d_dpsi
-            - K_dist * dist
+            - self.K_dist * dist
             - self.K_d_dist * d_dist
-            - K_delta * current_state.delta
+            - self.K_delta * current_state.delta
             - self.K_d_delta * d_delta
         )
         if abs(dist) < 0.05 and abs(current_state.delta) < 0.01:
@@ -198,8 +196,12 @@ class Pdm4arAgent(Agent):
             self.steer_controller.update_reference(reference=0)
             ddelta = self.steer_controller.get_control(t)
             return min(max(ddelta, -self.vp.ddelta_max), self.vp.ddelta_max)
-        print(ddelta)
+        # print(ddelta)
         return ddelta
+
+    def abstandhalteassistent(self, current_state: VehicleState) -> float:
+
+        return acc
 
 
 ### ADDITIONAL HELPER FUNCTIONS ###
