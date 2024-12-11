@@ -105,6 +105,7 @@ class Pdm4arAgent(Agent):
                 self.lane_orientation = (
                     current_state.psi
                 )  # assuming that lane orientation == initial orientation vehicle
+                self.goal_id = self.lanelet_network.find_lanelet_by_position([self.goal.ref_lane.control_points[1].q.p])[0][0]
                 self.further_initialization = False
 
             bd = BicycleDynamics(self.vg, self.vp)
@@ -143,6 +144,7 @@ class Pdm4arAgent(Agent):
                 self.lanelet_network,
                 self.half_lane_width,
                 self.lane_orientation,
+                self.goal_id,
             )
 
             # astar_solver = Astar.path(graph=weighted_graph)

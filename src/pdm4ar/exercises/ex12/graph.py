@@ -1,5 +1,6 @@
 from calendar import c
 from hmac import new
+from operator import is_
 from typing import TypeVar, Set, Mapping
 from networkx import DiGraph
 import numpy as np
@@ -54,6 +55,7 @@ def generate_graph(
     lanelet_network: LaneletNetwork,
     half_lane_width: float,
     lane_orientation: float,
+    goal_id: int,
 ) -> WeightedGraph:
     start = time.time()
 
@@ -121,13 +123,18 @@ def generate_graph(
 
             # create new child node
             cmds = controls_traj[i]  # control commands to get from parent to child
+
+            # boolean to indicate goal node
+            is_goal = True if lanelet_id == goal_id else False
+
             child = (
                 level + 1,
                 x + dx * np.cos(psi - lane_orientation) - dy * np.sin(psi - lane_orientation),
                 y + dy * np.cos(psi - lane_orientation) + dx * np.sin(psi - lane_orientation),
                 psi + dpsi,
+                is_goal,
                 tuple(cmds),
-            )  # (level, x, y, psi, control commands)
+            )  # (level, x, y, psi, boolean goal, control commands)
 
             graph.add_node(child)
             graph.add_edge((level, x, y, psi), child)
