@@ -104,15 +104,18 @@ class Pdm4arAgent(Agent):
         """This method is called by the simulator only at the beginning of each simulation.
         Do not modify the signature of this method."""
         self.name = init_obs.my_name
-        self.goal = init_obs.goal  # Attention: calling the attributes of RefLaneGoal works but pylance gives an error  # type: ignore
+        self.goal = init_obs.goal  # type: ignore
         self.vg = init_obs.model_geometry  # type: ignore
         self.vp = init_obs.model_params  # type: ignore
         self.dt = init_obs.dg_scenario.scenario.dt  # type: ignore
 
-        # # self.goal_lines = self.define_goal_points()
-
         # additional class variables
-        # self.lanelet_polygons = init_obs.dg_scenario.lanelet_network.lanelet_polygons  # type: ignore
+        # TODO: default values for testing
+        self.n_vel = 1
+        self.steer_range = 0.3
+        self.n_steer = 3
+        self.n_steps = 5
+
         self.lanelet_network = init_obs.dg_scenario.lanelet_network  # type: ignore
         self.half_lane_width = init_obs.goal.ref_lane.control_points[1].r  # type: ignore
         self.goal_id = init_obs.dg_scenario.lanelet_network.find_lanelet_by_position([init_obs.goal.ref_lane.control_points[1].q.p])[0][0]  # type: ignore
@@ -122,10 +125,8 @@ class Pdm4arAgent(Agent):
         self.further_initialization = True  # boolean to further initialize parameters in the first call of get_commands
         self.recompute = True  # boolean value that indicates if the graph needs to be recomputed
         self.goal_lane_ids = self.retrieve_goal_lane_ids()
-
-        # static obstacles (contains a LineString, m, I_z and e) # self.static_obs = init_obs.dg_scenario.static_obstacles
-
         self.steer_controller = SteerController.from_vehicle_params(vehicle_param=self.vp)
+        self.freq_counter = 0
 
     def get_commands(self, sim_obs: SimObservations) -> VehicleCommands:
         """This method is called by the simulator every dt_commands seconds (0.1s by default).
@@ -136,26 +137,22 @@ class Pdm4arAgent(Agent):
         :param sim_obs:
         :return:
         """
+        if self.further_initialization:
+            self.lane_orientation = sim_obs.players[
+                "Ego"
+            ].state.psi  # type: ignore # assuming that lane orientation == initial orientation vehicle
+            self.further_initialization = False
+
         if self.recompute:
+            self.recompute = False
             # get current lane by using the current position
-            current_pos = np.array([sim_obs.players[self.name].state.x, sim_obs.players[self.name].state.y])
-            try:
-                self.current_lanelet_id = self.lanelet_network.find_lanelet_by_position([current_pos])[0][0]
-            except IndexError:
-                print("No lanelet found or out of bounds")
+            # current_pos = np.array([sim_obs.players[self.name].state.x, sim_obs.players[self.name].state.y])
+            # try:
+            #     self.current_lanelet_id = self.lanelet_network.find_lanelet_by_position([current_pos])[0][0]
+            # except IndexError:
+            #     print("No lanelet found or out of bounds")
 
             current_state = sim_obs.players["Ego"].state  # type: ignore
-
-            if self.further_initialization:
-                # TODO: default values for testing
-                self.n_vel = 1
-                self.steer_range = 0.3
-                self.n_steer = 3
-                self.n_steps = 5
-                self.lane_orientation = (
-                    current_state.psi
-                )  # assuming that lane orientation == initial orientation vehicle
-                self.further_initialization = False
 
             # calculate the motion primitives once
             bd = BicycleDynamics(self.vg, self.vp)
@@ -187,7 +184,6 @@ class Pdm4arAgent(Agent):
             # plot_other_cars(test1, test2, self.lanelet_network.lanelet_polygons)
 
             start = time.time()
-
             weighted_graph = generate_graph(
                 current_state,
                 end_states_traj,
@@ -198,7 +194,6 @@ class Pdm4arAgent(Agent):
                 self.lane_orientation,
                 self.goal_lane_ids,
             )
-
             end = time.time()
             print(f"Generating the graph took {end - start} seconds.")
 
@@ -209,19 +204,55 @@ class Pdm4arAgent(Agent):
             end_astar = time.time()
             print(f"A* took {end_astar - start_astar} seconds.")
 
+            # TODO: collision checking on shortest path with RTree for every time step
+
             # start_plot = time.time()
             plot_adj_list(weighted_graph.graph, self.lanelet_network.lanelet_polygons, shortest_path)
             # end_plot = time.time()
             # print(f"Plotting the graph took {end_plot - start_plot} seconds.")
 
-            # TODO do stuff with shortest path
+            if shortest_path:  # case: A* found a path -> lane change
+                self.path = shortest_path
+                self.num_steps_path = len(shortest_path)
+                self.lane_change = True
+                self.freq_counter += 1
+                self.path_node = 1
+                return VehicleCommands(
+                    acc=shortest_path[self.path_node][3][0].acc, ddelta=shortest_path[self.path_node][3][0].ddelta
+                )
 
-            self.recompute = False
+            else:  # continue on lane
+                acc = self.abstandhalteassistent(current_state, sim_obs.players)  # type: ignore
+                ddelta = self.spurhalteassistent(current_state, float(sim_obs.time))  # type: ignore
+                self.freq_counter += 1
+                return VehicleCommands(acc, ddelta)  # self.spurhalteassistent(current_state, float(sim_obs.time)))
 
-        # TODO: extract correct vehicle commands
-        # return VehicleCommands(
-        #     acc=controls_traj[0][0].acc, ddelta=controls_traj[0][0].ddelta, lights=LightsCmd("turn_left")
-        # )
+        # extract correct vehicle commands
+        if self.lane_change:
+            idx = self.freq_counter % (self.n_steps + 1)
+            if idx != 0:  # TODO: correct? - still want to execute the nth step
+                self.freq_counter += 1
+                return VehicleCommands(
+                    acc=self.path[self.path_node][3][idx].acc,
+                    ddelta=self.path[self.path_node][3][idx].ddelta,
+                )
+            else:
+                self.path_node += 1
+                if self.path_node == self.num_steps_path:  # exlude virtual goal node
+                    self.lane_change = False
+                    self.straight = True
+                else:
+                    self.freq_counter += 1
+                    return VehicleCommands(
+                        acc=self.path[self.path_node][3][0].acc, ddelta=self.path[self.path_node][3][0].ddelta
+                    )
+
+        else:  # default case: continue on lane
+            # TODO: if stable and not on goal lane -> recompute graph
+            acc = self.abstandhalteassistent(current_state, sim_obs.players)  # type: ignore
+            ddelta = self.spurhalteassistent(current_state, float(sim_obs.time))  # type: ignore
+            self.freq_counter += 1
+            return VehicleCommands(acc, ddelta)  # self.spurhalteassistent(current_state, float(sim_obs.time)))
 
         # if float(sim_obs.time) < 0.7:
         #     return VehicleCommands(acc=0.0, ddelta=-0.3)
@@ -231,11 +262,6 @@ class Pdm4arAgent(Agent):
         # acc = self.abstandhalteassistent(current_state, sim_obs.players)
         # ddelta = self.spurhalteassistent(current_state, float(sim_obs.time))
         # return VehicleCommands(acc, ddelta)  # self.spurhalteassistent(current_state, float(sim_obs.time)))
-
-        rnd_acc = random.random() * self.params.param1
-        rnd_ddelta = (random.random() - 0.5) * self.params.param1
-
-        return VehicleCommands(acc=rnd_acc, ddelta=rnd_ddelta)
 
     def retrieve_goal_lane_ids(self) -> list:
         goal_lane_ids = [self.goal_id]
@@ -406,7 +432,6 @@ def plot_adj_list(graph, lanelet_polygons, shortest_path):
     plt.savefig(filename, bbox_inches="tight")  # Save the plot with tight bounding box
     plt.close()
     print(f"Graph saved to {filename}")
-
 
 def plot_other_cars(init_pos, future_pos, lanelet_polygons):
     plt.figure(figsize=(30, 25), dpi=250)
