@@ -169,8 +169,8 @@ def generate_graph(
     goal_nodes = [node for node in graph.nodes if node[2] == True]  # list of all nodes on the goal lane
     virtual_goal_node = (-1, virtual_goal_vehicle_state, False, tuple([]))  # virtual goal node
     graph.add_node(virtual_goal_node)  # virtual goal node
-    edges_to_virtual = [(goal_node, virtual_goal_node) for goal_node in goal_nodes]
-    graph.add_edges_from(edges_to_virtual)
+    for goal_node in goal_nodes:
+        graph.add_edge(goal_node, virtual_goal_node)
     end_virt_goal = time.time()
     print(f"Generating the virtual goal node took {end_virt_goal - start_virt_goal} seconds.")
 
@@ -281,15 +281,15 @@ def plot_adj_list(adj_list, lanelet_polygons):
     # Collect all node coordinates
     node_coords = []
     for parent in adj_list.keys():
-        parent_x, parent_y = parent[1], parent[2]
+        parent_x, parent_y = parent[1].x, parent[1].y
         node_coords.append((parent_x, parent_y))
 
     # Collect all edge coordinates
     edge_coords = []
     for parent, children in adj_list.items():
-        parent_x, parent_y = parent[1], parent[2]
+        parent_x, parent_y = parent[1].x, parent[1].y
         for child in children:
-            child_x, child_y = child[1], child[2]
+            child_x, child_y = child[1].x, child[1].y
             edge_coords.append([(parent_x, parent_y), (child_x, child_y)])
 
     # Plot all nodes at once
