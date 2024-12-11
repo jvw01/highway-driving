@@ -51,8 +51,7 @@ class WeightedGraph:
         :return: The weight associated to the edge, raises an Exception if the edge does not exist
         """
         try:
-            # return self.weights[(u, v)]
-            return self.graph[u][v]["weight"]  # TODO: to be checked
+            return self.graph[u][v]["weight"]
         except KeyError:
             raise EdgeNotFound(f"Cannot find weight for edge: {(u, v)}")
 

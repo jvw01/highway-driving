@@ -1,10 +1,13 @@
 from hmac import new
+from mimetypes import init
 import random
 from dataclasses import dataclass
 from tracemalloc import start
 from typing import Sequence
 
 from commonroad.scenario.lanelet import LaneletNetwork
+from cvxopt import normal
+from cycler import K
 from dg_commons import PlayerName
 from dg_commons.sim.goals import PlanningGoal, RefLaneGoal
 from dg_commons.sim import SimObservations, InitSimObservations
@@ -22,6 +25,7 @@ from dg_commons import logger, Timestamp, LinSpaceTuple
 import math
 from dg_commons.sim.models.model_utils import apply_full_acceleration_limits
 from dg_commons.dynamics import BicycleDynamics
+import frozendict
 from matplotlib import markers
 import numpy as np
 from shapely import linestrings
@@ -43,6 +47,10 @@ from shapely.geometry import LineString
 from .graph import WeightedGraph
 from .astar import Astar
 import time
+from dg_commons.controllers.pid import PID
+from dg_commons.controllers.steer import SteerController
+from dg_commons.controllers.pure_pursuit import PurePursuit
+from geometry.types import SE2value, E2value
 
 from .motion_primitves import generate_primat
 from .graph import generate_graph
@@ -64,6 +72,28 @@ class Pdm4arAgent(Agent):
     vp: VehicleParameters
     dt: Decimal
     lane_width: float
+
+    # parameters for the velocity controler:
+    d_ref: float = 3
+    T: float = 8
+    init_abstand: bool = False
+    last_e: float
+
+    # parameters for the steering controller:
+    K_psi: float = 1
+    K_dist: float = 0.1
+    K_delta: float = 2
+    # okish results for P-only: k_psi=1, k_dist=0.1, k_delta=2
+    K_d_psi: float = 0.5  # tried: 0.1, 0.5, already 0.1 helps to stabilize
+    K_d_dist: float = 0.1
+    K_d_delta: float = 0.1
+
+    pure_pursuit: PurePursuit
+    steer_controller: SteerController
+    last_dpsi: float
+    last_dist: float
+    last_delta: float
+    init_control: bool = False
 
     def __init__(self):
         # feel free to remove/modify  the following
@@ -93,11 +123,9 @@ class Pdm4arAgent(Agent):
         self.recompute = True  # boolean value that indicates if the graph needs to be recomputed
         self.goal_lane_ids = self.retrieve_goal_lane_ids()
 
-        #########
-        # static obstacles (contains a LineString, m, I_z and e)
-        self.static_obs = init_obs.dg_scenario.static_obstacles
-        # print(self.static_obs)
-        #########
+        # static obstacles (contains a LineString, m, I_z and e) # self.static_obs = init_obs.dg_scenario.static_obstacles
+
+        self.steer_controller = SteerController.from_vehicle_params(vehicle_param=self.vp)
 
     def get_commands(self, sim_obs: SimObservations) -> VehicleCommands:
         """This method is called by the simulator every dt_commands seconds (0.1s by default).
@@ -129,6 +157,7 @@ class Pdm4arAgent(Agent):
                 )  # assuming that lane orientation == initial orientation vehicle
                 self.further_initialization = False
 
+            # calculate the motion primitives once
             bd = BicycleDynamics(self.vg, self.vp)
             mpg_params = MPGParam.from_vehicle_parameters(
                 dt=Decimal(self.dt), n_steps=self.n_steps, n_vel=self.n_vel, n_steer=self.n_steer, vp=self.vp
@@ -173,18 +202,12 @@ class Pdm4arAgent(Agent):
             end = time.time()
             print(f"Generating the graph took {end - start} seconds.")
 
-            # # works for DiGraph implementation
-            # starting_node = None
-            # for node in weighted_graph.nodes:
-            #     if node[0] == 0:  # 'level'
-            #         starting_node = node
-            #     if node[0] == -1:  # TODO hardcoded level for the virtual node (identifier might change in future)
-            #         virtual_goal_node = node
-            #     if starting_node is not None and virtual_goal_node is not None:
-            #         break
-
+            # find shortest path with A*
+            start_astar = time.time()
             astar_solver = Astar(weighted_graph)
             shortest_path = astar_solver.path(start_node=weighted_graph.start_node, goal_node=weighted_graph.goal_node)
+            end_astar = time.time()
+            print(f"A* took {end_astar - start_astar} seconds.")
 
             # start_plot = time.time()
             plot_adj_list(weighted_graph.graph, self.lanelet_network.lanelet_polygons, shortest_path)
@@ -195,9 +218,19 @@ class Pdm4arAgent(Agent):
 
             self.recompute = False
 
+        # TODO: extract correct vehicle commands
         # return VehicleCommands(
         #     acc=controls_traj[0][0].acc, ddelta=controls_traj[0][0].ddelta, lights=LightsCmd("turn_left")
         # )
+
+        # if float(sim_obs.time) < 0.7:
+        #     return VehicleCommands(acc=0.0, ddelta=-0.3)
+        # return VehicleCommands(
+        #     acc=0.0, ddelta=self.spurassistehaltent(current_state, self.K_psi, self.K_dist, self.K_delta)
+        # )  # , lights=LightsCmd("turn_left"))
+        # acc = self.abstandhalteassistent(current_state, sim_obs.players)
+        # ddelta = self.spurhalteassistent(current_state, float(sim_obs.time))
+        # return VehicleCommands(acc, ddelta)  # self.spurhalteassistent(current_state, float(sim_obs.time)))
 
         rnd_acc = random.random() * self.params.param1
         rnd_ddelta = (random.random() - 0.5) * self.params.param1
@@ -224,6 +257,94 @@ class Pdm4arAgent(Agent):
             )
 
         return propagated_states
+
+    def spurhalteassistent(self, current_state: VehicleState, t: float) -> float:
+        cur_lanelet_id = self.lanelet_network.find_lanelet_by_position([np.array([current_state.x, current_state.y])])
+        if not cur_lanelet_id[0]:
+            print("No lanelet found")
+            return 0.0
+        cur_lanelet = self.lanelet_network._lanelets[cur_lanelet_id[0][0]]
+        center_vertices = cur_lanelet.center_vertices
+        lanelet_heading = math.atan2(
+            center_vertices[-1][1] - center_vertices[0][1], center_vertices[-1][0] - center_vertices[0][0]
+        )  # should not be necessary, just to prevent numerical drift
+        line_vec = center_vertices[-1] - center_vertices[0]
+        normal_vec = np.array([-line_vec[1], line_vec[0]])
+        normal_vec = normal_vec / np.linalg.norm(normal_vec)
+        dist = np.dot(
+            normal_vec, np.array([current_state.x, current_state.y]) - center_vertices[0]
+        )  # should already have correct sign
+        dpsi = current_state.psi - lanelet_heading
+        if not self.init_control:
+            self.init_control = True
+            self.last_dist = dist
+            self.last_dpsi = dpsi
+            self.last_delta = current_state.delta
+            return (
+                -1 * dpsi - 0.1 * dist - 2 * current_state.delta  # hardcoded to tune the PD controller
+            )  # -self.K_psi * dpsi - self.K_dist * dist - self.K_delta * current_state.delta
+        d_dist = (dist - self.last_dist) / float(self.dt)
+        d_dpsi = (dpsi - self.last_dpsi) / float(self.dt)
+        d_delta = (current_state.delta - self.last_delta) / float(self.dt)
+        self.last_dist = dist
+        self.last_dpsi = dpsi
+        self.last_delta = current_state.delta
+
+        ddelta = (
+            -self.K_psi * dpsi
+            - self.K_d_psi * d_dpsi
+            - self.K_dist * dist
+            - self.K_d_dist * d_dist
+            - self.K_delta * current_state.delta
+            - self.K_d_delta * d_delta
+        )
+        if abs(dist) < 0.05 and abs(current_state.delta) < 0.01:
+            self.steer_controller.update_measurement(measurement=current_state.delta)
+            self.steer_controller.update_reference(reference=0)
+            ddelta = self.steer_controller.get_control(t)
+            return min(max(ddelta, -self.vp.ddelta_max), self.vp.ddelta_max)
+        # print(ddelta)
+        return ddelta
+
+    def abstandhalteassistent(self, current_state: VehicleState, players: frozendict) -> float:
+        player_ahead = None
+        for player in players:
+            if player != self.name:
+                diff_angle = np.arctan2(
+                    players[player].state.y - current_state.y, players[player].state.x - current_state.x
+                )
+                if abs(diff_angle - current_state.psi) < 0.04:
+                    print(player)
+                    player_ahead = players[player]
+
+                    # player_lanelet_id = self.lanelet_network.find_lanelet_by_position([np.array([player.state.x, player.state.y])])
+                    # if player_lanelet_id[0][0]==self.lanelet_network.find_lanelet_by_position([np.array([current_state.x, current_state.y])])[0][0]:
+                    #     play
+        if player_ahead is None:
+            return self.gib_ihm(current_state)
+        else:
+            dist_to_player = math.sqrt(
+                (player_ahead.state.x - current_state.x) ** 2 + (player_ahead.state.y - current_state.y) ** 2
+            )
+            e = dist_to_player - self.d_ref
+            if not self.init_abstand:
+                self.init_abstand = True
+                self.last_e = e
+                return (player_ahead.state.vx / self.T + 3) * (
+                    self.last_e
+                )  # P-controler for first time step, here last_e is also the current error
+            de = (e - self.last_e) / float(self.dt)
+            self.last_e = e
+            K_p = player_ahead.state.vx / self.T + 3
+            acc = K_p * (self.T * de + e)
+
+            return acc
+
+    def gib_ihm(self, current_state: VehicleState) -> float:
+        """ "Probably delete this function and integrate it into abstandhalteassistent for final version, thought it was funny"""
+        if current_state.vx >= 24.5:
+            return 0.0
+        return self.vp.acc_limits[1]
 
 
 ### ADDITIONAL HELPER FUNCTIONS ###
