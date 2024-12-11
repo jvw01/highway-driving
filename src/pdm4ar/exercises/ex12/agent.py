@@ -213,7 +213,7 @@ class Pdm4arAgent(Agent):
 
             if shortest_path:  # case: A* found a path -> lane change
                 self.path = shortest_path
-                self.num_steps_path = len(shortest_path)
+                self.num_steps_path = len(shortest_path) - 1  # exlude virtual goal node
                 self.lane_change = True
                 self.freq_counter += 1
                 self.path_node = 1
@@ -238,7 +238,7 @@ class Pdm4arAgent(Agent):
                 )
             else:
                 self.path_node += 1
-                if self.path_node == self.num_steps_path:  # exlude virtual goal node
+                if self.path_node == self.num_steps_path:
                     self.lane_change = False
                     self.straight = True
                 else:
