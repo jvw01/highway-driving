@@ -21,28 +21,23 @@ class InformedGraphSearch(ABC):
         # Abstract function. Nothing to do here.
         pass
 
+
+# node structure: (level: int, state: VehicleState, is_goal: bool, cmds: tuple[List[VehicleCommands]])
 @dataclass
 class Astar(InformedGraphSearch):
 
-    # TODO adapt the in the agent.py that it only calls A* if a point in the graph is intersecting
-    # with a goal_line (+buffer) and if not execute it and generate subsequently a new graph until
-    # a goal was found
-
-    # TODO do we want to use X or VehicleState as type
-
-    def heuristic(self, u: X, v: X) -> float:
+    def heuristic(self, u: tuple, v: tuple) -> float:
         # dist_to_goal_x = v.x - u.x
         # dist_to_goal_y = v.y - u.y
         # euclidean_distance = np.sqrt(dist_to_goal_x**2 + dist_to_goal_y**2)
-
         pass
         
-    def path(self, start: X, goal: X) -> Path:
+    def path(self, start_node: tuple, goal_node: tuple) -> Path:
         graph = self.graph
-        heap: list[tuple[float, X]] = [(0, start)]  # (total_cost, node) it's important that cost comes first s.t. heapq can prioritize correctly
-        cost_to_reach: dict[X, float] = {start: 0}  # node: cost. Is the cost for the path from the start to the node
-        predecessor: dict[X, Optional[X]] = {start: None}
-        already_expanded_nodes: set[X] = set()
+        heap: list[tuple[float, tuple]] = [(0, start_node)]  # (total_cost, node) it's important that cost comes first s.t. heapq can prioritize correctly
+        cost_to_reach: dict[tuple, float] = {start_node: 0}  # node: cost. Is the cost for the path from the start to the node
+        predecessor: dict[tuple, Optional[tuple]] = {start_node: None}
+        already_expanded_nodes: set[tuple] = set()
 
         while heap: # while heap is not empty
             current_total_cost, root = heapq.heappop(heap)
@@ -51,9 +46,9 @@ class Astar(InformedGraphSearch):
                 continue # Skip already processed nodes
             already_expanded_nodes.add(root)
 
-            if root == goal:
+            if root == goal_node:
                 found_path: Path = []
-                node: X = root
+                node: tuple = root
                 while node is not None:
                     found_path.append(node)
                     node = predecessor[node]
@@ -80,5 +75,3 @@ class Astar(InformedGraphSearch):
                     heapq.heappush(heap, (total_cost, new_state))
 
         return [] # return failure
-    
-

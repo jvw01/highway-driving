@@ -79,7 +79,7 @@ class Pdm4arAgent(Agent):
         self.vp = init_obs.model_params  # type: ignore
         self.dt = init_obs.dg_scenario.scenario.dt  # type: ignore
 
-        self.goal_lines = self.define_goal_points()
+        # self.goal_lines = self.define_goal_points()
 
         # additional class variables
         # self.lanelet_polygons = init_obs.dg_scenario.lanelet_network.lanelet_polygons  # type: ignore
@@ -169,9 +169,19 @@ class Pdm4arAgent(Agent):
                 self.goal_id,
             )
 
+        # works for DiGraph implementation
+        starting_node = None
+        for node in weighted_graph.nodes:
+            if node[0] == 0:  # 'level'
+                starting_node = node
+            if node[0] == -1: # TODO hardcoded level for the virtual node (identifier might change in future)
+                virtual_goal_node = node
+            if starting_node is not None and virtual_goal_node is not None:
+                break
+
 
         astar_solver = Astar(weighted_graph)
-        shortest_path = astar_solver.path(start=current_state, goal=self.goal_lines)
+        shortest_path = astar_solver.path(start=starting_node, goal=virtual_goal_node)
 
         # TODO do stuff with shortest path
 

@@ -210,7 +210,11 @@ def cost_function(current_node: VehicleState, lanelet_network: LaneletNetwork, l
     #     for state, next_state in zip(primitive.values[:-1], primitive.values[1:]) # produces paris of consecutive states
     # )
 
-    cost = heading_cost + speed_cost
+    # takes the level of the node as cost (increases with int steps from the starting node)
+    heuristic_cost = current_node[0] + 1 if current_node[4] else 0.0
+    heuristic_weighting_factor = 1.0
+
+    cost = heading_cost + speed_cost + (heuristic_weighting_factor * heuristic_cost)
 
     return cost
 
