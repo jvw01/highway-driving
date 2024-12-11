@@ -61,7 +61,7 @@ def generate_graph(
     lanelet_id: int,
     half_lane_width: float,
     lane_orientation: float,
-    goal_id: int,
+    goal_id: list,
 ) -> WeightedGraph:
     start = time.time()
 
@@ -136,7 +136,7 @@ def generate_graph(
             cmds = controls_traj[i]  # control commands to get from parent to child
 
             # boolean to indicate goal node
-            is_goal = True if lanelet_id[0][0] == goal_id else False
+            is_goal = True if lanelet_id[0][0] in goal_id else False
 
             # start_veh = time.time()
             child_vehicle_state = VehicleState(
@@ -215,25 +215,32 @@ def cost_function(
     # - Discomfort level (RMSE of acc)
     # (- primitive_length maybe, but it is not penalized in the perf_metrics.py)
 
+    current_vehicle_state = current_node[1]
+
     # TODO implement something that lets us go to the goal, e.g. time to goal or distnace to goal
 
     # relative heading penalty
-    current_vehicle_state = current_node[1]
-    lane_heading_angle = get_relative_heading(
-        state=current_vehicle_state, lanelet_network=lanelet_network, lanelet_id=lanelet_id
-    )
-    heading_penalty = (np.abs(lane_heading_angle) - 0.1) * 10.0
-    heading_penalty = np.clip(heading_penalty, 0.0, 1.0)
-    heading_cost = 5.0 * heading_penalty
+    # start_rel_heading = time.time()
+    # lane_heading_angle = get_relative_heading(
+    #     state=current_vehicle_state, lanelet_network=lanelet_network, lanelet_id=lanelet_id
+    # )
+    # heading_penalty = (np.abs(lane_heading_angle) - 0.1) * 10.0
+    # heading_penalty = np.clip(heading_penalty, 0.0, 1.0)
+    # heading_cost = 5.0 * heading_penalty
+    # end_rel_heading = time.time()
+    # print(f"Calculating the relative heading took {end_rel_heading - start_rel_heading} seconds.")
 
     # risk penalty
     # TODO
 
     # speed penalty
+    # start_speed = time.time()
     v_diff = np.maximum(current_vehicle_state.vx - 25.0, 5.0 - current_vehicle_state.vx)
     velocity_penalty = v_diff / 5.0
     velocity_penalty = np.clip(velocity_penalty, 0.0, 1.0)
     speed_cost = 5.0 * velocity_penalty
+    # end_speed = time.time()
+    # print(f"Calculating the speed penalty took {end_speed - start_speed} seconds.")
 
     # TODO Discomfort cost (weighted acc. RMSE according to ISO 2631-1)
     # for the weighted acc. use the butterworth bandpass filter with the iso params
@@ -245,7 +252,8 @@ def cost_function(
     #     for state, next_state in zip(primitive.values[:-1], primitive.values[1:]) # produces paris of consecutive states
     # )
 
-    cost = heading_cost + speed_cost
+    # cost = heading_cost + speed_cost
+    cost = speed_cost
 
     return cost
 
