@@ -79,17 +79,19 @@ class Pdm4arAgent(Agent):
         self.vp = init_obs.model_params  # type: ignore
         self.dt = init_obs.dg_scenario.scenario.dt  # type: ignore
 
-        # self.goal_lines = self.define_goal_points()
+        # # self.goal_lines = self.define_goal_points()
 
         # additional class variables
         # self.lanelet_polygons = init_obs.dg_scenario.lanelet_network.lanelet_polygons  # type: ignore
         self.lanelet_network = init_obs.dg_scenario.lanelet_network  # type: ignore
-        self.half_lane_width = init_obs.goal.ref_lane.control_points[0].r  # type: ignore
+        self.half_lane_width = init_obs.goal.ref_lane.control_points[1].r  # type: ignore
+        self.goal_id = init_obs.dg_scenario.lanelet_network.find_lanelet_by_position([init_obs.goal.ref_lane.control_points[1].q.p])[0][0]  # type: ignore
         # self.lane_orientation = init_obs.goal.ref_lane.control_points[
         #     0
         # ].q.theta  # note: the lane is not entirely straight
         self.further_initialization = True  # boolean to further initialize parameters in the first call of get_commands
         self.recompute = True  # boolean value that indicates if the graph needs to be recomputed
+        self.goal_lane_ids = self.retrieve_goal_lane_ids()
 
         #########
         # static obstacles (contains a LineString, m, I_z and e)
@@ -107,7 +109,7 @@ class Pdm4arAgent(Agent):
         :return:
         """
         if self.recompute:
-    
+
             # get current lane by using the current position
             current_pos = np.array([sim_obs.players[self.name].state.x, sim_obs.players[self.name].state.y])
             try:
@@ -126,7 +128,6 @@ class Pdm4arAgent(Agent):
                 self.lane_orientation = (
                     current_state.psi
                 )  # assuming that lane orientation == initial orientation vehicle
-                self.goal_id = self.lanelet_network.find_lanelet_by_position([self.goal.ref_lane.control_points[1].q.p])[0][0]
                 self.further_initialization = False
 
             bd = BicycleDynamics(self.vg, self.vp)
@@ -166,24 +167,25 @@ class Pdm4arAgent(Agent):
                 self.current_lanelet_id,
                 self.half_lane_width,
                 self.lane_orientation,
-                self.goal_id,
+                self.goal_lane_ids,
             )
 
-        # works for DiGraph implementation
-        starting_node = None
-        for node in weighted_graph.nodes:
-            if node[0] == 0:  # 'level'
-                starting_node = node
-            if node[0] == -1: # TODO hardcoded level for the virtual node (identifier might change in future)
-                virtual_goal_node = node
-            if starting_node is not None and virtual_goal_node is not None:
-                break
+            # # works for DiGraph implementation
+            # starting_node = None
+            # for node in weighted_graph.nodes:
+            #     if node[0] == 0:  # 'level'
+            #         starting_node = node
+            #     if node[0] == -1:  # TODO hardcoded level for the virtual node (identifier might change in future)
+            #         virtual_goal_node = node
+            #     if starting_node is not None and virtual_goal_node is not None:
+            #         break
 
+            astar_solver = Astar(weighted_graph)
+            shortest_path = astar_solver.path(
+                start_node=weighted_graph.start_node, goal_node=weighted_graph.virtual_goal_node
+            )
 
-        astar_solver = Astar(weighted_graph)
-        shortest_path = astar_solver.path(start=starting_node, goal=virtual_goal_node)
-
-        # TODO do stuff with shortest path
+            # TODO do stuff with shortest path
 
             self.recompute = False
 
@@ -196,6 +198,16 @@ class Pdm4arAgent(Agent):
 
         return VehicleCommands(acc=rnd_acc, ddelta=rnd_ddelta)
 
+    def retrieve_goal_lane_ids(self) -> list:
+        goal_lane_ids = [self.goal_id]
+        lanelet = self.lanelet_network.find_lanelet_by_id(goal_lane_ids[-1])
+        predecessor_id = lanelet.predecessor
+        while predecessor_id:
+            goal_lane_ids.append(predecessor_id[0])
+            predecessor_id = self.lanelet_network.find_lanelet_by_id(predecessor_id[0]).predecessor
+
+        return goal_lane_ids
+
     def propagate_state(self, x_pos: float, y_pos: float, vx: float, depth: int) -> list:
         propagated_states = []
         time_horizon = self.n_steps * float(self.dt)
@@ -206,41 +218,6 @@ class Pdm4arAgent(Agent):
             )
 
         return propagated_states
-    
-
-    # function that takes the goal and creates a list of shapely lines that mark the goal lane    
-    def define_goal_lines(self) -> List[LineString]:
-
-        line_segments = []
-        current_line_points = []
-        previous_theta = None
-
-        control_points = self.goal.ref_lane.control_points
-        for idx, centerline_point in enumerate(control_points):
-            # as long as theta is the same, create a shapely line connecting them
-            centerpoint = tuple(centerline_point.q.p)
-            theta = centerline_point.q.theta
-
-            if idx == 0:
-                current_line_points.append(centerpoint)
-                previous_theta = theta
-            else:
-                if theta != previous_theta:
-                    if len(current_line_points) > 1:
-                        line_segments.append(LineString(current_line_points))
-                    current_line_points = [current_line_points[-1], centerpoint]
-
-                else:
-                    current_line_points.append(centerpoint)
-                previous_theta = theta
-
-        if len(current_line_points) > 1:
-            line_segments.append(LineString(current_line_points))
-
-        print(control_points)
-        print(line_segments)
-
-        return line_segments
 
 
 ### ADDITIONAL HELPER FUNCTIONS ###
@@ -270,3 +247,40 @@ def plot_other_cars(init_pos, future_pos, lanelet_polygons):
     plt.savefig(filename, bbox_inches="tight")  # Save the plot with tight bounding box
     plt.close()
     print(f"Graph saved to {filename}")
+
+
+### BACKUP ###
+
+# # function that takes the goal and creates a list of shapely lines that mark the goal lane
+# def define_goal_lines(self) -> List[LineString]:
+
+#     line_segments = []
+#     current_line_points = []
+#     previous_theta = None
+
+#     control_points = self.goal.ref_lane.control_points
+#     for idx, centerline_point in enumerate(control_points):
+#         # as long as theta is the same, create a shapely line connecting them
+#         centerpoint = tuple(centerline_point.q.p)
+#         theta = centerline_point.q.theta
+
+#         if idx == 0:
+#             current_line_points.append(centerpoint)
+#             previous_theta = theta
+#         else:
+#             if theta != previous_theta:
+#                 if len(current_line_points) > 1:
+#                     line_segments.append(LineString(current_line_points))
+#                 current_line_points = [current_line_points[-1], centerpoint]
+
+#             else:
+#                 current_line_points.append(centerpoint)
+#             previous_theta = theta
+
+#     if len(current_line_points) > 1:
+#         line_segments.append(LineString(current_line_points))
+
+#     print(control_points)
+#     print(line_segments)
+
+#     return line_segments
