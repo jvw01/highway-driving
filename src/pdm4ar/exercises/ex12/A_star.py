@@ -1,8 +1,8 @@
-from .graph import WeightedGraph
 import heapq
 from abc import ABC, abstractmethod
 from typing import Optional, List, TypeVar
 from dataclasses import dataclass
+from .graph import WeightedGraph
 
 X = TypeVar("X")
 
@@ -24,10 +24,18 @@ class InformedGraphSearch(ABC):
 @dataclass
 class Astar(InformedGraphSearch):
 
+    # TODO adapt the in the agent.py that it only calls A* if a point in the graph is intersecting
+    # with a goal_line (+buffer) and if not execute it and generate subsequently a new graph until
+    # a goal was found
+
+    # TODO do we want to use X or VehicleState as type
+
     def heuristic(self, u: X, v: X) -> float:
-        # TODO implement by usage of the cost_function in the cost_function branch
+        # dist_to_goal_x = v.x - u.x
+        # dist_to_goal_y = v.y - u.y
+        # euclidean_distance = np.sqrt(dist_to_goal_x**2 + dist_to_goal_y**2)
+
         pass
-        
         
     def path(self, start: X, goal: X) -> Path:
         graph = self.graph
@@ -61,8 +69,9 @@ class Astar(InformedGraphSearch):
                 weight = graph.get_weight(root, new_state)
                 new_cost_to_reach = cost_to_reach[root] + weight # costToReach(s) + w(s,a,s')       w is the cost from the current node to the new / subsequent node
 
-                total_cost = new_cost_to_reach + self.heuristic(new_state, goal)  # heuristik muss nur von aktueller node dazugerechnet werden und nicht die bisherigen heuristiken auch in den costToReach reinrechnen!
-                
+                # total_cost = new_cost_to_reach + self.heuristic(new_state, goal)  # heuristik muss nur von aktueller node dazugerechnet werden und nicht die bisherigen heuristiken auch in den costToReach reinrechnen!
+                total_cost = new_cost_to_reach # TODO implement heuristic
+
                 # if new state state has not been visited yet or if new path is cheaper
                 # it's possible that the new_state has already been reached through another (potentially cheaper) path which is already stored in cost_to_reach[new_state]
                 if new_state not in cost_to_reach or new_cost_to_reach < cost_to_reach[new_state]:
@@ -71,3 +80,5 @@ class Astar(InformedGraphSearch):
                     heapq.heappush(heap, (total_cost, new_state))
 
         return [] # return failure
+    
+

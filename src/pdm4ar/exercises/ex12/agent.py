@@ -6,7 +6,7 @@ from typing import Sequence
 
 from commonroad.scenario.lanelet import LaneletNetwork
 from dg_commons import PlayerName
-from dg_commons.sim.goals import PlanningGoal
+from dg_commons.sim.goals import PlanningGoal, RefLaneGoal
 from dg_commons.sim import SimObservations, InitSimObservations
 from dg_commons.sim.agents import Agent
 from dg_commons.sim.models.obstacles import StaticObstacle
@@ -24,6 +24,7 @@ from dg_commons.sim.models.model_utils import apply_full_acceleration_limits
 from dg_commons.dynamics import BicycleDynamics
 from matplotlib import markers
 import numpy as np
+from shapely import linestrings
 from sympy import Mul, primitive
 from dataclasses import dataclass
 from decimal import Decimal
@@ -35,6 +36,10 @@ from dg_commons.sim.models import vehicle_ligths
 from dg_commons.sim.models.vehicle_ligths import LightsCmd
 from networkx import DiGraph
 from shapely.geometry import Polygon
+import time
+from matplotlib.collections import LineCollection
+from shapely.geometry import LineString
+
 from .graph import WeightedGraph
 from .A_star import Astar
 import time
@@ -69,10 +74,12 @@ class Pdm4arAgent(Agent):
         """This method is called by the simulator only at the beginning of each simulation.
         Do not modify the signature of this method."""
         self.name = init_obs.my_name
-        self.goal = init_obs.goal  # type: ignore
+        self.goal = init_obs.goal  # Attention: calling the attributes of RefLaneGoal works but pylance gives an error  # type: ignore
         self.vg = init_obs.model_geometry  # type: ignore
         self.vp = init_obs.model_params  # type: ignore
         self.dt = init_obs.dg_scenario.scenario.dt  # type: ignore
+
+        self.goal_lines = self.define_goal_points()
 
         # additional class variables
         # self.lanelet_polygons = init_obs.dg_scenario.lanelet_network.lanelet_polygons  # type: ignore
@@ -100,6 +107,14 @@ class Pdm4arAgent(Agent):
         :return:
         """
         if self.recompute:
+    
+            # get current lane by using the current position
+            current_pos = np.array([sim_obs.players[self.name].state.x, sim_obs.players[self.name].state.y])
+            try:
+                self.current_lanelet_id = self.lanelet_network.find_lanelet_by_position([current_pos])[0][0]
+            except IndexError:
+                print("No lanelet found or out of bounds")
+
             current_state = sim_obs.players["Ego"].state  # type: ignore
 
             if self.further_initialization:
@@ -148,14 +163,17 @@ class Pdm4arAgent(Agent):
                 controls_traj,
                 depth,
                 self.lanelet_network,
+                self.current_lanelet_id,
                 self.half_lane_width,
                 self.lane_orientation,
                 self.goal_id,
             )
 
-            # astar_solver = Astar.path(graph=weighted_graph)
-            # TODO: need to define finite_horizon_goal
-            # shortest_path = astar_solver.path(start=current_state, goal=finite_horizon_goal)
+
+        astar_solver = Astar(weighted_graph)
+        shortest_path = astar_solver.path(start=current_state, goal=self.goal_lines)
+
+        # TODO do stuff with shortest path
 
             self.recompute = False
 
@@ -178,6 +196,41 @@ class Pdm4arAgent(Agent):
             )
 
         return propagated_states
+    
+
+    # function that takes the goal and creates a list of shapely lines that mark the goal lane    
+    def define_goal_lines(self) -> List[LineString]:
+
+        line_segments = []
+        current_line_points = []
+        previous_theta = None
+
+        control_points = self.goal.ref_lane.control_points
+        for idx, centerline_point in enumerate(control_points):
+            # as long as theta is the same, create a shapely line connecting them
+            centerpoint = tuple(centerline_point.q.p)
+            theta = centerline_point.q.theta
+
+            if idx == 0:
+                current_line_points.append(centerpoint)
+                previous_theta = theta
+            else:
+                if theta != previous_theta:
+                    if len(current_line_points) > 1:
+                        line_segments.append(LineString(current_line_points))
+                    current_line_points = [current_line_points[-1], centerpoint]
+
+                else:
+                    current_line_points.append(centerpoint)
+                previous_theta = theta
+
+        if len(current_line_points) > 1:
+            line_segments.append(LineString(current_line_points))
+
+        print(control_points)
+        print(line_segments)
+
+        return line_segments
 
 
 ### ADDITIONAL HELPER FUNCTIONS ###
