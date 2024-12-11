@@ -79,7 +79,7 @@ class Pdm4arAgent(Agent):
         self.vp = init_obs.model_params  # type: ignore
         self.dt = init_obs.dg_scenario.scenario.dt  # type: ignore
 
-        self.goal_lines = self.define_goal_points()
+        # self.goal_lines = self.define_goal_points()
 
         # additional class variables
         # self.lanelet_polygons = init_obs.dg_scenario.lanelet_network.lanelet_polygons  # type: ignore
@@ -107,7 +107,7 @@ class Pdm4arAgent(Agent):
         :return:
         """
         if self.recompute:
-    
+
             # get current lane by using the current position
             current_pos = np.array([sim_obs.players[self.name].state.x, sim_obs.players[self.name].state.y])
             try:
@@ -169,11 +169,10 @@ class Pdm4arAgent(Agent):
                 self.goal_id,
             )
 
+            # astar_solver = Astar(weighted_graph)
+            # shortest_path = astar_solver.path(start=current_state, goal=self.goal_lines)
 
-        astar_solver = Astar(weighted_graph)
-        shortest_path = astar_solver.path(start=current_state, goal=self.goal_lines)
-
-        # TODO do stuff with shortest path
+            # TODO do stuff with shortest path
 
             self.recompute = False
 
@@ -196,9 +195,8 @@ class Pdm4arAgent(Agent):
             )
 
         return propagated_states
-    
 
-    # function that takes the goal and creates a list of shapely lines that mark the goal lane    
+    # function that takes the goal and creates a list of shapely lines that mark the goal lane
     def define_goal_lines(self) -> List[LineString]:
 
         line_segments = []

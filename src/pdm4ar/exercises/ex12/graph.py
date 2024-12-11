@@ -16,6 +16,8 @@ from commonroad.scenario.lanelet import LaneletNetwork
 from shapely.affinity import translate, rotate
 from rtree import index
 
+from pdm4ar.exercises_def.ex09 import goal
+
 # A generic type for nodes in a graph.
 X = TypeVar("X")
 
@@ -50,7 +52,6 @@ class WeightedGraph:
             raise EdgeNotFound(f"Cannot find weight for edge: {(u, v)}")
 
 
-
 def generate_graph(
     current_state: VehicleState,
     end_states_traj: List[VehicleState],
@@ -73,10 +74,15 @@ def generate_graph(
     ]
 
     # add root node
-    graph.add_node((0, current_state.x, current_state.y, current_state.psi))
+    init_node = (0, current_state, False, tuple([]))
+    graph.add_node(init_node)
 
     # recursive function to generate children
-    def add_children(level, x, y, psi):
+    def add_children(previous_node):
+        level = previous_node[0]
+        x = previous_node[1].x
+        y = previous_node[1].y
+        psi = previous_node[1].psi
         if level >= depth:
             return
 
@@ -130,31 +136,56 @@ def generate_graph(
             cmds = controls_traj[i]  # control commands to get from parent to child
 
             # boolean to indicate goal node
-            is_goal = True if lanelet_id == goal_id else False
+            is_goal = True if lanelet_id[0][0] == goal_id else False
+
+            # start_veh = time.time()
+            child_vehicle_state = VehicleState(
+                x=x + delta_pos[0], y=y + delta_pos[1], psi=psi + dpsi, vx=current_state.vx, delta=current_state.delta
+            )
+            # end_veh = time.time()
+            # print(f"Generating the VehicleState took {end_veh - start_veh} seconds.")
 
             child = (
                 level + 1,
-                x + dx * np.cos(psi - lane_orientation) - dy * np.sin(psi - lane_orientation),
-                y + dy * np.cos(psi - lane_orientation) + dx * np.sin(psi - lane_orientation),
-                psi + dpsi,
+                child_vehicle_state,
                 is_goal,
                 tuple(cmds),
-            )  # (level, x, y, psi, boolean goal, control commands)
+            )  # (level, VehicleState, boolean goal, control commands)
 
             graph.add_node(child)
-            graph.add_edge((level, x, y, psi), child)
+            graph.add_edge(
+                previous_node,
+                child,
+            )
 
             # recursively add children for child
-            add_children(child[0], child[1], child[2], child[3])
+            add_children(child)
 
-    add_children(0, current_state.x, current_state.y, current_state.psi)
+    add_children(init_node)
+
+    # add virtual goal node
+    start_virt_goal = time.time()
+    virtual_goal_vehicle_state = VehicleState(x=0, y=0, psi=0, vx=0, delta=0)  # TODO: what values for virtual goal?
+    goal_nodes = [node for node in graph.nodes if node[2] == True]  # list of all nodes on the goal lane
+    virtual_goal_node = (-1, virtual_goal_vehicle_state, False, tuple([]))  # virtual goal node
+    graph.add_node(virtual_goal_node)  # virtual goal node
+    edges_to_virtual = [(goal_node, virtual_goal_node) for goal_node in goal_nodes]
+    graph.add_edges_from(edges_to_virtual)
+    end_virt_goal = time.time()
+    print(f"Generating the virtual goal node took {end_virt_goal - start_virt_goal} seconds.")
 
     # convert networkx DiGraph to the custom WeightedGraph structure
+    start_adj = time.time()
     adj_list = {node: set(neighbors.keys()) for node, neighbors in graph.adjacency()}
+    end_adj = time.time()
+    print(f"Generating the adjacency list took {end_adj - start_adj} seconds.")
 
     # these weights subsequently land in the cost-to-go of the A* algo
+    start_weights = time.time()
     weights = {(u, v): cost_function(current_node=u, lanelet_network=lanelet_network, lanelet_id=lanelet_id) 
                for u, v, _ in graph.edges(data=True)}
+    end_weights = time.time()
+    print(f"Generating the weights took {end_weights - start_weights} seconds.")
 
     # Debugging prints:
     # for edge, weight in weights.items():
@@ -171,7 +202,9 @@ def generate_graph(
     return WeightedGraph(adj_list, weights, graph)
 
 
-def cost_function(current_node: VehicleState, lanelet_network: LaneletNetwork, lanelet_id: int) -> float:
+def cost_function(
+    current_node: tuple, lanelet_network: LaneletNetwork, lanelet_id: int
+) -> float:  # add virtual goal node
     # TODO missing penalties:
     # - Collision rate
     # - Success rate
@@ -185,7 +218,10 @@ def cost_function(current_node: VehicleState, lanelet_network: LaneletNetwork, l
     # TODO implement something that lets us go to the goal, e.g. time to goal or distnace to goal
 
     # relative heading penalty
-    lane_heading_angle = get_relative_heading(lanelet_id, current_node)
+    current_vehicle_state = current_node[1]
+    lane_heading_angle = get_relative_heading(
+        state=current_vehicle_state, lanelet_network=lanelet_network, lanelet_id=lanelet_id
+    )
     heading_penalty = (np.abs(lane_heading_angle) - 0.1) * 10.0
     heading_penalty = np.clip(heading_penalty, 0.0, 1.0)
     heading_cost = 5.0 * heading_penalty
@@ -194,7 +230,7 @@ def cost_function(current_node: VehicleState, lanelet_network: LaneletNetwork, l
     # TODO
 
     # speed penalty
-    v_diff = np.maximum(current_node.vx - 25.0, 5.0 - current_node.vx)
+    v_diff = np.maximum(current_vehicle_state.vx - 25.0, 5.0 - current_vehicle_state.vx)
     velocity_penalty = v_diff / 5.0
     velocity_penalty = np.clip(velocity_penalty, 0.0, 1.0)
     speed_cost = 5.0 * velocity_penalty
@@ -202,7 +238,6 @@ def cost_function(current_node: VehicleState, lanelet_network: LaneletNetwork, l
     # TODO Discomfort cost (weighted acc. RMSE according to ISO 2631-1)
     # for the weighted acc. use the butterworth bandpass filter with the iso params
     # RMSE: np.sqrt(np.mean(np.square(signal)))
-
 
     # TODO primitive_length (trajectory distance)
     # primitive_length = sum(
@@ -215,7 +250,7 @@ def cost_function(current_node: VehicleState, lanelet_network: LaneletNetwork, l
     return cost
 
 
-def get_relative_heading(self, state: VehicleState, lanelet_network: LaneletNetwork, lanelet_id: int) -> float:
+def get_relative_heading(state: VehicleState, lanelet_network: LaneletNetwork, lanelet_id: int) -> float:
     lanelet = lanelet_network.find_lanelet_by_id(lanelet_id)
     dg_lanelet = DgLanelet.from_commonroad_lanelet(lanelet)
 
@@ -225,7 +260,6 @@ def get_relative_heading(self, state: VehicleState, lanelet_network: LaneletNetw
     relative_heading = lane_pose.relative_heading
 
     return relative_heading
-
 
 
 def calc_new_occupancy(current_occupancy: Polygon, delta_pos: np.ndarray, dpsi: float) -> Polygon:
