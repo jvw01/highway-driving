@@ -41,7 +41,7 @@ from matplotlib.collections import LineCollection
 from shapely.geometry import LineString
 
 from .graph import WeightedGraph
-from .A_star import Astar
+from .astar import Astar
 import time
 
 from .motion_primitves import generate_primat
@@ -109,7 +109,6 @@ class Pdm4arAgent(Agent):
         :return:
         """
         if self.recompute:
-
             # get current lane by using the current position
             current_pos = np.array([sim_obs.players[self.name].state.x, sim_obs.players[self.name].state.y])
             try:
@@ -158,17 +157,21 @@ class Pdm4arAgent(Agent):
             # test2 = self.propagate_state(dyn_obs_current[1][0], dyn_obs_current[1][1], dyn_obs_current[1][2], depth)
             # plot_other_cars(test1, test2, self.lanelet_network.lanelet_polygons)
 
+            start = time.time()
+
             weighted_graph = generate_graph(
                 current_state,
                 end_states_traj,
                 controls_traj,
                 depth,
                 self.lanelet_network,
-                self.current_lanelet_id,
                 self.half_lane_width,
                 self.lane_orientation,
                 self.goal_lane_ids,
             )
+
+            end = time.time()
+            print(f"Generating the graph took {end - start} seconds.")
 
             # # works for DiGraph implementation
             # starting_node = None
@@ -181,9 +184,12 @@ class Pdm4arAgent(Agent):
             #         break
 
             astar_solver = Astar(weighted_graph)
-            shortest_path = astar_solver.path(
-                start_node=weighted_graph.start_node, goal_node=weighted_graph.virtual_goal_node
-            )
+            shortest_path = astar_solver.path(start_node=weighted_graph.start_node, goal_node=weighted_graph.goal_node)
+
+            # start_plot = time.time()
+            plot_adj_list(weighted_graph.graph, self.lanelet_network.lanelet_polygons, shortest_path)
+            # end_plot = time.time()
+            # print(f"Plotting the graph took {end_plot - start_plot} seconds.")
 
             # TODO do stuff with shortest path
 
@@ -224,6 +230,61 @@ class Pdm4arAgent(Agent):
 import matplotlib.pyplot as plt
 import os
 import time
+from matplotlib.collections import LineCollection
+
+
+def plot_adj_list(graph, lanelet_polygons, shortest_path):
+    plt.figure(figsize=(30, 25), dpi=250)
+    ax = plt.gca()
+
+    # Collect all node coordinates
+    node_coords = []
+    edge_coords = []
+    for parent in graph.nodes:
+        if parent[0] == -1:  # Skip the virtual goal node
+            continue
+        parent_x, parent_y = parent[1].x, parent[1].y
+        node_coords.append((parent_x, parent_y))
+
+        for child in graph.successors(parent):
+            if child[0] == -1:  # Skip edges to the virtual goal node
+                continue
+            child_x, child_y = child[1].x, child[1].y
+            edge_coords.append([(parent_x, parent_y), (child_x, child_y)])
+
+    # Plot all nodes at once
+    node_coords = np.array(node_coords)
+    plt.scatter(node_coords[:, 0], node_coords[:, 1], color="blue", s=1)
+
+    # Plot all edges at once using LineCollection
+    edge_collection = LineCollection(edge_coords, colors="blue", linewidths=0.3)
+    ax.add_collection(edge_collection)
+
+    # Plot the shortest path
+    if shortest_path:
+        path_coords = []
+        for node in shortest_path:
+            if node[0] == -1:  # Skip the virtual goal node
+                continue
+            node_x, node_y = node[1].x, node[1].y
+            path_coords.append((node_x, node_y))
+
+        path_coords = np.array(path_coords)
+        plt.plot(path_coords[:, 0], path_coords[:, 1], color="red", linewidth=1.5, marker="o", markersize=2)
+
+    # Plot static obstacles (from on_episode_init)
+    for lanelet in lanelet_polygons:
+        x, y = lanelet.shapely_object.exterior.xy
+        plt.plot(x, y, linestyle="-", linewidth=0.8, color="darkorchid")
+
+    ax.set_aspect("equal", adjustable="box")
+
+    output_dir = "/tmp"
+    os.makedirs(output_dir, exist_ok=True)
+    filename = os.path.join(output_dir, "graph.png")
+    plt.savefig(filename, bbox_inches="tight")  # Save the plot with tight bounding box
+    plt.close()
+    print(f"Graph saved to {filename}")
 
 
 def plot_other_cars(init_pos, future_pos, lanelet_polygons):

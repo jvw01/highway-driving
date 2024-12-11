@@ -18,41 +18,41 @@ from shapely.affinity import translate, rotate
 from rtree import index
 
 from pdm4ar.exercises_def.ex09 import goal
+import time
+
+
+class EdgeNotFound(Exception):  # TODO: necessary?
+    pass
+
 
 # A generic type for nodes in a graph.
 X = TypeVar("X")
 
-
-class EdgeNotFound(Exception):
-    pass
-
-
+# An adjacency list from node to a set of nodes.
 AdjacencyList = Mapping[X, Set[X]]
-"""An adjacency list from node to a set of nodes."""
 
 
 class WeightedGraph:
-    adj_list: AdjacencyList
-    weights: Mapping[tuple[X, X], float]
     graph: DiGraph
+    adj_list: AdjacencyList
     start_node: tuple
     virtual_goal_node: tuple
 
-    def __init__(self, adj_list: dict, weights: dict, graph: DiGraph, start_node: tuple, virtual_goal_node: tuple):
-        self.adj_list = adj_list
-        self.weights = weights
+    def __init__(self, graph: DiGraph, adj_list: AdjacencyList, start_node: tuple, goal_node: tuple):
         self.graph = graph
+        self.adj_list = adj_list
         self.start_node = start_node
-        self.virtual_goal_node = virtual_goal_node
+        self.goal_node = goal_node
 
-    def get_weight(self, u: X, v: X) -> float:
+    def get_weight(self, u: tuple, v: tuple) -> float:
         """
         :param u: The "from" of the edge
         :param v: The "to" of the edge
         :return: The weight associated to the edge, raises an Exception if the edge does not exist
         """
         try:
-            return self.weights[(u, v)]
+            # return self.weights[(u, v)]
+            return self.graph[u][v]["weight"]  # TODO: to be checked
         except KeyError:
             raise EdgeNotFound(f"Cannot find weight for edge: {(u, v)}")
 
@@ -63,12 +63,10 @@ def generate_graph(
     controls_traj: List[List[VehicleCommands]],
     depth: int,
     lanelet_network: LaneletNetwork,
-    lanelet_id: int,
     half_lane_width: float,
     lane_orientation: float,
     goal_id: list,
 ) -> WeightedGraph:
-    start = time.time()
 
     graph = DiGraph()
 
@@ -161,6 +159,9 @@ def generate_graph(
             graph.add_edge(
                 previous_node,
                 child,
+                weight=cost_function(
+                    current_node=previous_node, lanelet_network=lanelet_network, lanelet_id=lanelet_id[0][0]
+                ),
             )
 
             # recursively add children for child
@@ -169,42 +170,20 @@ def generate_graph(
     add_children(init_node)
 
     # add virtual goal node
-    start_virt_goal = time.time()
+    # start_virt_goal = time.time()
     virtual_goal_vehicle_state = VehicleState(x=0, y=0, psi=0, vx=0, delta=0)  # TODO: what values for virtual goal?
     goal_nodes = [node for node in graph.nodes if node[2] == True]  # list of all nodes on the goal lane
     virtual_goal_node = (-1, virtual_goal_vehicle_state, False, tuple([]))  # virtual goal node
     graph.add_node(virtual_goal_node)  # virtual goal node
     for goal_node in goal_nodes:
-        graph.add_edge(goal_node, virtual_goal_node)
-    end_virt_goal = time.time()
-    print(f"Generating the virtual goal node took {end_virt_goal - start_virt_goal} seconds.")
+        graph.add_edge(goal_node, virtual_goal_node, weight=0.0)  # edge from goal nodes to virtual goal node is 0
+    # end_virt_goal = time.time()
+    # print(f"Generating the virtual goal node took {end_virt_goal - start_virt_goal} seconds.")
 
-    # convert networkx DiGraph to the custom WeightedGraph structure
-    start_adj = time.time()
+    # create adjacency list for A* algorithm
     adj_list = {node: set(neighbors.keys()) for node, neighbors in graph.adjacency()}
-    end_adj = time.time()
-    print(f"Generating the adjacency list took {end_adj - start_adj} seconds.")
 
-    # these weights subsequently land in the cost-to-go of the A* algo
-    start_weights = time.time()
-    weights = {(u, v): cost_function(current_node=u, lanelet_network=lanelet_network, lanelet_id=lanelet_id) 
-               for u, v, _ in graph.edges(data=True)}
-    end_weights = time.time()
-    print(f"Generating the weights took {end_weights - start_weights} seconds.")
-
-    # Debugging prints:
-    # for edge, weight in weights.items():
-    #     print(f"Edge: {edge}, Weight: {weight}")
-
-    end = time.time()
-    print(f"Generating the graph took {end - start} seconds.")
-
-    start = time.time()
-    plot_adj_list(adj_list, lanelet_network.lanelet_polygons)
-    end = time.time()
-    print(f"Plotting the graph took {end - start} seconds.")
-
-    return WeightedGraph(adj_list, weights, graph, init_node, virtual_goal_node)
+    return WeightedGraph(graph=graph, adj_list=adj_list, start_node=init_node, goal_node=virtual_goal_node)
 
 
 def cost_function(
@@ -265,53 +244,6 @@ def cost_function(
 
     return cost
 
-
-### ADDITIONAL HELPER FUNCTIONS ###
-import matplotlib.pyplot as plt
-import os
-import time
-from matplotlib.collections import LineCollection
-
-
-def plot_adj_list(adj_list, lanelet_polygons):
-    plt.figure(figsize=(30, 25), dpi=250)
-    ax = plt.gca()
-
-    # Collect all node coordinates
-    node_coords = []
-    for parent in adj_list.keys():
-        parent_x, parent_y = parent[1].x, parent[1].y
-        node_coords.append((parent_x, parent_y))
-
-    # Collect all edge coordinates
-    edge_coords = []
-    for parent, children in adj_list.items():
-        parent_x, parent_y = parent[1].x, parent[1].y
-        for child in children:
-            child_x, child_y = child[1].x, child[1].y
-            edge_coords.append([(parent_x, parent_y), (child_x, child_y)])
-
-    # Plot all nodes at once
-    node_coords = np.array(node_coords)
-    plt.scatter(node_coords[:, 0], node_coords[:, 1], color="blue", s=1)
-
-    # Plot all edges at once using LineCollection
-    edge_collection = LineCollection(edge_coords, colors="blue", linewidths=0.3)
-    ax.add_collection(edge_collection)
-
-    # Plot static obstacles (from on_episode_init)
-    for lanelet in lanelet_polygons:
-        x, y = lanelet.shapely_object.exterior.xy
-        plt.plot(x, y, linestyle="-", linewidth=0.8, color="darkorchid")
-
-    ax.set_aspect("equal", adjustable="box")
-
-    output_dir = "/tmp"
-    os.makedirs(output_dir, exist_ok=True)
-    filename = os.path.join(output_dir, "graph.png")
-    plt.savefig(filename, bbox_inches="tight")  # Save the plot with tight bounding box
-    plt.close()
-    print(f"Graph saved to {filename}")
 
 ### BACKUP ###
 # def get_relative_heading(state: VehicleState, lanelet_network: LaneletNetwork, lanelet_id: int) -> float:

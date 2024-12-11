@@ -14,7 +14,7 @@ OpenedNodes = Optional[List[X]]
 
 @dataclass
 class InformedGraphSearch(ABC):
-    graph: WeightedGraph
+    weighted_graph: WeightedGraph
 
     @abstractmethod
     def path(self, start: X, goal: X) -> Path:
@@ -31,9 +31,9 @@ class Astar(InformedGraphSearch):
         # dist_to_goal_y = v.y - u.y
         # euclidean_distance = np.sqrt(dist_to_goal_x**2 + dist_to_goal_y**2)
         pass
-        
+
     def path(self, start_node: tuple, goal_node: tuple) -> Path:
-        graph = self.graph
+        weighted_graph = self.weighted_graph
         heap: list[tuple[float, tuple]] = [(0, start_node)]  # (total_cost, node) it's important that cost comes first s.t. heapq can prioritize correctly
         cost_to_reach: dict[tuple, float] = {start_node: 0}  # node: cost. Is the cost for the path from the start to the node
         predecessor: dict[tuple, Optional[tuple]] = {start_node: None}
@@ -52,16 +52,16 @@ class Astar(InformedGraphSearch):
                 while node is not None:
                     found_path.append(node)
                     node = predecessor[node]
-                
+
                 found_path.reverse()
                 return found_path
-            
-            new_states: OpenedNodes = graph.adj_list[root]
+
+            new_states: OpenedNodes = weighted_graph.adj_list[root]
             for new_state in new_states:
                 if new_state in already_expanded_nodes:
                     continue # Skip already processed neighbors
 
-                weight = graph.get_weight(root, new_state)
+                weight = weighted_graph.get_weight(root, new_state)
                 new_cost_to_reach = cost_to_reach[root] + weight # costToReach(s) + w(s,a,s')       w is the cost from the current node to the new / subsequent node
 
                 # total_cost = new_cost_to_reach + self.heuristic(new_state, goal)  # heuristik muss nur von aktueller node dazugerechnet werden und nicht die bisherigen heuristiken auch in den costToReach reinrechnen!
