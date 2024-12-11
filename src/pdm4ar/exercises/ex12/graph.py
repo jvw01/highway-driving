@@ -138,6 +138,7 @@ def generate_graph(
             cmds = controls_traj[i]  # control commands to get from parent to child
 
             # boolean to indicate goal node
+            # is_goal = True if lanelet_id[0][0] in goal_id else False
             is_goal = True if lanelet_id[0][0] in goal_id else False
 
             # start_veh = time.time()

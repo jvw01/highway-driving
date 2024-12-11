@@ -137,6 +137,8 @@ class Pdm4arAgent(Agent):
         :param sim_obs:
         :return:
         """
+        current_state = sim_obs.players["Ego"].state  # type: ignore
+
         if self.further_initialization:
             self.lane_orientation = sim_obs.players[
                 "Ego"
@@ -151,8 +153,6 @@ class Pdm4arAgent(Agent):
             #     self.current_lanelet_id = self.lanelet_network.find_lanelet_by_position([current_pos])[0][0]
             # except IndexError:
             #     print("No lanelet found or out of bounds")
-
-            current_state = sim_obs.players["Ego"].state  # type: ignore
 
             # calculate the motion primitives once
             bd = BicycleDynamics(self.vg, self.vp)
@@ -222,7 +222,7 @@ class Pdm4arAgent(Agent):
                 )
 
             else:  # continue on lane
-                acc = self.abstandhalteassistent(current_state, sim_obs.players)  # type: ignore
+                acc = 0
                 ddelta = self.spurhalteassistent(current_state, float(sim_obs.time))  # type: ignore
                 self.freq_counter += 1
                 return VehicleCommands(acc, ddelta)  # self.spurhalteassistent(current_state, float(sim_obs.time)))
@@ -234,22 +234,33 @@ class Pdm4arAgent(Agent):
                 self.freq_counter += 1
                 return VehicleCommands(
                     acc=self.path[self.path_node][3][idx].acc,
-                    ddelta=self.path[self.path_node][3][idx].ddelta,
+                    # ddelta=self.path[self.path_node][3][idx].ddelta,
+                    ddelta=0,  # TODO: needs to be fixed: ddelta's cannot be summed up
                 )
+
             else:
                 self.path_node += 1
-                if self.path_node == self.num_steps_path:
+                if self.path_node == self.num_steps_path:  # end of lane change
                     self.lane_change = False
-                    self.straight = True
+                    acc = 0
+                    ddelta = self.spurhalteassistent(current_state, float(sim_obs.time))  # type: ignore
+                    print("delta:", current_state.delta)
+                    print("ddelta:", ddelta)
+                    print("psi:", current_state.psi)
+                    self.freq_counter += 1
+                    return VehicleCommands(acc, ddelta)  # self.spurhalteassistent(current_state, float(sim_obs.time)))
                 else:
                     self.freq_counter += 1
+                    # return VehicleCommands(
+                    #     acc=self.path[self.path_node][3][0].acc, ddelta=self.path[self.path_node][3][0].ddelta
+                    # )
                     return VehicleCommands(
-                        acc=self.path[self.path_node][3][0].acc, ddelta=self.path[self.path_node][3][0].ddelta
-                    )
+                        acc=self.path[self.path_node][3][0].acc, ddelta=0
+                    )  # TODO: needs to be fixed: ddelta's cannot be summed up
 
         else:  # default case: continue on lane
-            # TODO: if stable and not on goal lane -> recompute graph
-            acc = self.abstandhalteassistent(current_state, sim_obs.players)  # type: ignore
+            # TODO: if stable and not on goal lane -> recompute graph; if stable and on goal lane -> abstandhalteassistent
+            acc = 0  # type: ignore
             ddelta = self.spurhalteassistent(current_state, float(sim_obs.time))  # type: ignore
             self.freq_counter += 1
             return VehicleCommands(acc, ddelta)  # self.spurhalteassistent(current_state, float(sim_obs.time)))
@@ -368,9 +379,11 @@ class Pdm4arAgent(Agent):
 
     def gib_ihm(self, current_state: VehicleState) -> float:
         """ "Probably delete this function and integrate it into abstandhalteassistent for final version, thought it was funny"""
-        if current_state.vx >= 24.5:
-            return 0.0
-        return self.vp.acc_limits[1]
+        # TODO: fix this function
+        # if current_state.vx >= 24.5:
+        #     return 0.0
+        # return self.vp.acc_limits[1]
+        return 0.0
 
 
 ### ADDITIONAL HELPER FUNCTIONS ###
