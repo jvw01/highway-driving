@@ -24,6 +24,7 @@ from dg_commons import logger, Timestamp, LinSpaceTuple
 import math
 from dg_commons.sim.models.model_utils import apply_full_acceleration_limits
 from dg_commons.dynamics import BicycleDynamics
+import frozendict
 from matplotlib import markers
 import numpy as np
 from sympy import Mul, primitive
@@ -66,6 +67,14 @@ class Pdm4arAgent(Agent):
     vp: VehicleParameters
     dt: Decimal
     lane_width: float
+
+    # parameters for the velocity controler:
+    d_ref: float = 3
+    T: float = 8
+    init_abstand: bool = False
+    last_e: float
+
+    # parameters for the steering controller:
     K_psi: float = 1
     K_dist: float = 0.1
     K_delta: float = 2
@@ -73,6 +82,7 @@ class Pdm4arAgent(Agent):
     K_d_psi: float = 0.5  # tried: 0.1, 0.5, already 0.1 helps to stabilize
     K_d_dist: float = 0.1
     K_d_delta: float = 0.1
+
     pure_pursuit: PurePursuit
     steer_controller: SteerController
     last_dpsi: float
@@ -149,7 +159,9 @@ class Pdm4arAgent(Agent):
         # return VehicleCommands(
         #     acc=0.0, ddelta=self.spurassistehaltent(current_state, self.K_psi, self.K_dist, self.K_delta)
         # )  # , lights=LightsCmd("turn_left"))
-        return VehicleCommands(0.0, 0.0)  # self.spurhalteassistent(current_state, float(sim_obs.time)))
+        acc = self.abstandhalteassistent(current_state, sim_obs.players)
+        ddelta = self.spurhalteassistent(current_state, float(sim_obs.time))
+        return VehicleCommands(acc, ddelta)  # self.spurhalteassistent(current_state, float(sim_obs.time)))
 
     def spurhalteassistent(self, current_state: VehicleState, t: float) -> float:
         cur_lanelet_id = self.lanelet_network.find_lanelet_by_position([np.array([current_state.x, current_state.y])])
@@ -199,9 +211,45 @@ class Pdm4arAgent(Agent):
         # print(ddelta)
         return ddelta
 
-    def abstandhalteassistent(self, current_state: VehicleState) -> float:
+    def abstandhalteassistent(self, current_state: VehicleState, players: frozendict) -> float:
+        player_ahead = None
+        for player in players:
+            if player != self.name:
+                diff_angle = np.arctan2(
+                    players[player].state.y - current_state.y, players[player].state.x - current_state.x
+                )
+                if abs(diff_angle - current_state.psi) < 0.04:
+                    print(player)
+                    player_ahead = players[player]
 
-        return acc
+                    # player_lanelet_id = self.lanelet_network.find_lanelet_by_position([np.array([player.state.x, player.state.y])])
+                    # if player_lanelet_id[0][0]==self.lanelet_network.find_lanelet_by_position([np.array([current_state.x, current_state.y])])[0][0]:
+                    #     play
+        if player_ahead is None:
+            return self.gib_ihm(current_state)
+        else:
+            dist_to_player = math.sqrt(
+                (player_ahead.state.x - current_state.x) ** 2 + (player_ahead.state.y - current_state.y) ** 2
+            )
+            e = dist_to_player - self.d_ref
+            if not self.init_abstand:
+                self.init_abstand = True
+                self.last_e = e
+                return (player_ahead.state.vx / self.T + 3) * (
+                    self.last_e
+                )  # P-controler for first time step, here last_e is also the current error
+            de = (e - self.last_e) / float(self.dt)
+            self.last_e = e
+            K_p = player_ahead.state.vx / self.T + 3
+            acc = K_p * (self.T * de + e)
+
+            return acc
+
+    def gib_ihm(self, current_state: VehicleState) -> float:
+        """ "Probably delete this function and integrate it into abstandhalteassistent for final version, thought it was funny"""
+        if current_state.vx >= 24.5:
+            return 0.0
+        return self.vp.acc_limits[1]
 
 
 ### ADDITIONAL HELPER FUNCTIONS ###
