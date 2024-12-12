@@ -193,7 +193,6 @@ class Pdm4arAgent(Agent):
 
             # create rtree for dynamic obstacles at each level of the graph (i.e. prepare efficient search for collision checking)
             states_dyn_obs = self.states_other_cars(dyn_obs_current)
-            plot_rtree_polygons(states_dyn_obs, self.lanelet_network.lanelet_polygons)
 
             # find shortest path with A*
             start_astar = time.time()
@@ -203,7 +202,9 @@ class Pdm4arAgent(Agent):
                     start_node=weighted_graph.start_node, goal_node=weighted_graph.goal_node
                 )
                 # TODO: collision checking on shortest path with RTree for every time step
-                if self.has_collision(shortest_path, dyn_obs_current, current_occupancy):
+                if self.has_collision(
+                    shortest_path=shortest_path, states_other_cars=states_dyn_obs, occupancy=current_occupancy
+                ):
                     print("Collision detected. Recomputing shortest path.")
                     # eliminate nodes and edges of the shortest path from the graph
                     edges_to_remove = [
@@ -215,10 +216,15 @@ class Pdm4arAgent(Agent):
                     continue
                 else:
                     # a path without collision was found
-                    print("Path without collision found.")
+                    print("Found path without collision.")
                     break
+
             end_astar = time.time()
             print(f"A* took {end_astar - start_astar} seconds.")
+
+            self.plot_collisions(
+                states_dyn_obs, self.lanelet_network.lanelet_polygons, shortest_path, states_dyn_obs, current_occupancy
+            )
 
             # start_plot = time.time()
             plot_graph(weighted_graph.graph, self.lanelet_network.lanelet_polygons, shortest_path)
@@ -259,9 +265,6 @@ class Pdm4arAgent(Agent):
                     self.lane_change = False
                     acc = 0
                     ddelta = self.spurhalteassistent(current_state, float(sim_obs.time))  # type: ignore
-                    # print("delta:", current_state.delta)
-                    # print("ddelta:", ddelta)
-                    # print("psi:", current_state.psi)
                     self.freq_counter += 1
                     return VehicleCommands(acc, ddelta)  # self.spurhalteassistent(current_state, float(sim_obs.time)))
                 else:
@@ -319,16 +322,25 @@ class Pdm4arAgent(Agent):
 
         return states_other_cars
 
-    # def calc_new_occupancy(self, current_occupancy: Polygon, delta_pos: np.ndarray, dpsi: float) -> Polygon:
-    #     translated_occupancy = translate(current_occupancy, xoff=delta_pos[0], yoff=delta_pos[1])
-    #     return rotate(translated_occupancy, angle=dpsi, origin=translated_occupancy.centroid, use_radians=True)
+    def calc_new_occupancy(self, current_occupancy: Polygon, delta_pos: np.ndarray, dpsi: float) -> Polygon:
+        translated_occupancy = translate(current_occupancy, xoff=delta_pos[0], yoff=delta_pos[1])
+        return rotate(translated_occupancy, angle=dpsi, origin=translated_occupancy.centroid, use_radians=True)
 
-    def has_collision(self, shortest_path, dyn_obs_current, current_uccupancy) -> bool:
-        # test1 = (dyn_obs_current[1][0], dyn_obs_current[1][1])
-        # test2 = self.propagate_state(dyn_obs_current[1][0], dyn_obs_current[1][1], dyn_obs_current[1][2], self.depth)
-        # plot_other_cars(test1, test2, self.lanelet_network.lanelet_polygons)
+    def has_collision(self, shortest_path: list, states_other_cars: list, occupancy: Polygon) -> bool:
+        for i in range(1, len(shortest_path) - 1):  # exclude start and goal node
+            strtree = states_other_cars[i]
+            delta_pos = np.array(
+                [shortest_path[i][1].x - shortest_path[i - 1][1].x, shortest_path[i][1].y - shortest_path[i - 1][1].y]
+            )
+            dpsi = shortest_path[i][1].psi - shortest_path[i - 1][1].psi
+            occupancy = self.calc_new_occupancy(current_occupancy=occupancy, delta_pos=delta_pos, dpsi=dpsi)
 
-        # TODO: needs to be implemented
+            # check for collision with each obstacle TODO: correct?????
+            candidate_indices = strtree.query(occupancy)
+            for idx in candidate_indices:
+                obstacle = strtree[idx]
+                if occupancy.intersects(obstacle):
+                    return True
         return False
 
     def spurhalteassistent(self, current_state: VehicleState, t: float) -> float:
@@ -421,6 +433,47 @@ class Pdm4arAgent(Agent):
         # return self.vp.acc_limits[1]
         return 0.0
 
+    def plot_collisions(self, rtree, lanelet_polygons, shortest_path, states_other_cars, occupancy):
+        """
+        Plot the shapely.Polygon objects stored in the R-Tree.
+        :param rtree_idx: R-Tree index containing the polygons.
+        :param title: Title of the plot.
+        """
+        plt.figure(figsize=(30, 25), dpi=250)
+        ax = plt.gca()
+
+        # Iterate through the R-Tree and plot each polygon
+        cmap = plt.cm.get_cmap("tab20")
+        for time_instance in rtree:
+            for i, polygon in enumerate(time_instance.geometries):
+                x, y = polygon.exterior.xy
+                color = cmap(i % cmap.N)
+                ax.plot(x, y, linestyle="-", linewidth=1, color=color)
+
+        for i in range(1, len(shortest_path) - 1):  # exclude start and goal node
+            rtree = states_other_cars[i]
+            delta_pos = np.array(
+                [shortest_path[i][1].x - shortest_path[i - 1][1].x, shortest_path[i][1].y - shortest_path[i - 1][1].y]
+            )
+            dpsi = shortest_path[i][1].psi - shortest_path[i - 1][1].psi
+            occupancy = self.calc_new_occupancy(current_occupancy=occupancy, delta_pos=delta_pos, dpsi=dpsi)
+            x, y = occupancy.exterior.xy
+            ax.plot(x, y, linestyle="-", linewidth=1, color="blue")
+
+        # Plot static obstacles (from on_episode_init)
+        for lanelet in lanelet_polygons:
+            x, y = lanelet.shapely_object.exterior.xy
+            plt.plot(x, y, linestyle="-", linewidth=0.8, color="darkorchid")
+
+        ax.set_aspect("equal", adjustable="box")
+
+        output_dir = "/tmp"
+        os.makedirs(output_dir, exist_ok=True)
+        filename = os.path.join(output_dir, "other_cars.png")
+        plt.savefig(filename, bbox_inches="tight")  # Save the plot with tight bounding box
+        plt.close()
+        print(f"Graph saved to {filename}")
+
 
 ### ADDITIONAL HELPER FUNCTIONS ###
 import matplotlib.pyplot as plt
@@ -495,38 +548,6 @@ def plot_other_cars(init_pos, future_pos, lanelet_polygons):
     plt.scatter(init_pos[0], init_pos[1], color="red", s=10)
     for pos in future_pos:
         plt.scatter(pos[0], pos[1], color="red", s=10)
-
-    ax.set_aspect("equal", adjustable="box")
-
-    output_dir = "/tmp"
-    os.makedirs(output_dir, exist_ok=True)
-    filename = os.path.join(output_dir, "other_cars.png")
-    plt.savefig(filename, bbox_inches="tight")  # Save the plot with tight bounding box
-    plt.close()
-    print(f"Graph saved to {filename}")
-
-
-def plot_rtree_polygons(rtree, lanelet_polygons):
-    """
-    Plot the shapely.Polygon objects stored in the R-Tree.
-    :param rtree_idx: R-Tree index containing the polygons.
-    :param title: Title of the plot.
-    """
-    plt.figure(figsize=(30, 25), dpi=250)
-    ax = plt.gca()
-
-    # Iterate through the R-Tree and plot each polygon
-    cmap = plt.cm.get_cmap("tab20")
-    for time_instance in rtree:
-        for i, polygon in enumerate(time_instance.geometries):
-            x, y = polygon.exterior.xy
-            color = cmap(i % cmap.N)
-            ax.plot(x, y, linestyle="-", linewidth=1, color=color)
-
-    # Plot static obstacles (from on_episode_init)
-    for lanelet in lanelet_polygons:
-        x, y = lanelet.shapely_object.exterior.xy
-        plt.plot(x, y, linestyle="-", linewidth=0.8, color="darkorchid")
 
     ax.set_aspect("equal", adjustable="box")
 
