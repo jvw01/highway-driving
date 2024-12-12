@@ -51,6 +51,9 @@ from dg_commons.controllers.pid import PID
 from dg_commons.controllers.steer import SteerController
 from dg_commons.controllers.pure_pursuit import PurePursuit
 from geometry.types import SE2value, E2value
+from shapely.affinity import translate, rotate
+from shapely.strtree import STRtree
+
 
 from .motion_primitves import generate_primat
 from .graph import generate_graph
@@ -147,12 +150,6 @@ class Pdm4arAgent(Agent):
 
         if self.recompute:
             self.recompute = False
-            # get current lane by using the current position
-            # current_pos = np.array([sim_obs.players[self.name].state.x, sim_obs.players[self.name].state.y])
-            # try:
-            #     self.current_lanelet_id = self.lanelet_network.find_lanelet_by_position([current_pos])[0][0]
-            # except IndexError:
-            #     print("No lanelet found or out of bounds")
 
             # calculate the motion primitives once
             bd = BicycleDynamics(self.vg, self.vp)
@@ -165,7 +162,22 @@ class Pdm4arAgent(Agent):
             )
 
             # build graph
-            depth = 8  # TODO: default value - need to decide how deep we want our graph to be
+            self.depth = 8  # TODO: default value - need to decide how deep we want our graph to be
+            start = time.time()
+            weighted_graph = generate_graph(
+                current_state,
+                end_states_traj,
+                controls_traj,
+                self.depth,
+                self.lanelet_network,
+                self.half_lane_width,
+                self.lane_orientation,
+                self.goal_lane_ids,
+            )
+            end = time.time()
+            print(f"Generating the graph took {end - start} seconds.")
+
+            # extract current state of dynamic obstacles to be able to propagate them for collision checking
             current_occupancy = sim_obs.players["Ego"].occupancy  # type: ignore
             dyn_obs_current = []
             for player in sim_obs.players:
@@ -179,23 +191,9 @@ class Pdm4arAgent(Agent):
                         )
                     )
 
-            # test1 = (dyn_obs_current[1][0], dyn_obs_current[1][1])
-            # test2 = self.propagate_state(dyn_obs_current[1][0], dyn_obs_current[1][1], dyn_obs_current[1][2], depth)
-            # plot_other_cars(test1, test2, self.lanelet_network.lanelet_polygons)
-
-            start = time.time()
-            weighted_graph = generate_graph(
-                current_state,
-                end_states_traj,
-                controls_traj,
-                depth,
-                self.lanelet_network,
-                self.half_lane_width,
-                self.lane_orientation,
-                self.goal_lane_ids,
-            )
-            end = time.time()
-            print(f"Generating the graph took {end - start} seconds.")
+            # create rtree for dynamic obstacles at each level of the graph (i.e. prepare efficient search for collision checking)
+            states_dyn_obs = self.states_other_cars(dyn_obs_current)
+            plot_rtree_polygons(states_dyn_obs, self.lanelet_network.lanelet_polygons)
 
             # find shortest path with A*
             start_astar = time.time()
@@ -205,7 +203,7 @@ class Pdm4arAgent(Agent):
                     start_node=weighted_graph.start_node, goal_node=weighted_graph.goal_node
                 )
                 # TODO: collision checking on shortest path with RTree for every time step
-                if self.has_collision(shortest_path, dyn_obs_current, self.lanelet_network):
+                if self.has_collision(shortest_path, dyn_obs_current, current_occupancy):
                     print("Collision detected. Recomputing shortest path.")
                     # eliminate nodes and edges of the shortest path from the graph
                     edges_to_remove = [
@@ -217,6 +215,7 @@ class Pdm4arAgent(Agent):
                     continue
                 else:
                     # a path without collision was found
+                    print("Path without collision found.")
                     break
             end_astar = time.time()
             print(f"A* took {end_astar - start_astar} seconds.")
@@ -302,19 +301,33 @@ class Pdm4arAgent(Agent):
 
         return goal_lane_ids
 
-    def propagate_state(self, x_pos: float, y_pos: float, vx: float, depth: int) -> list:
-        propagated_states = []
-        time_horizon = self.n_steps * float(self.dt)
-        s = vx * time_horizon  # note: cars do not change lanes
-        for i in range(depth):
-            propagated_states.append(
-                (x_pos + i * s * math.cos(self.lane_orientation), y_pos + i * s * math.sin(self.lane_orientation))
-            )
+    def states_other_cars(self, dyn_obs_current: list) -> list:
+        states_other_cars = []
+        time_horizon = self.n_steps * float(self.dt)  # time horizon for one motion primitive
+        for i in range(self.depth):
+            states_i = []
+            for dyn_obs in dyn_obs_current:
+                vx = dyn_obs[2]
+                s = vx * time_horizon  # note: other cars do not change lanes
+                x_off = i * s * math.cos(self.lane_orientation)
+                y_off = i * s * math.sin(self.lane_orientation)
+                occupancy = dyn_obs[3]
+                new_occupancy = translate(occupancy, xoff=x_off, yoff=y_off)
+                states_i.append(new_occupancy)
+            strtree = STRtree(states_i)
+            states_other_cars.append(strtree)
 
-        return propagated_states
+        return states_other_cars
 
-    def has_collision(self, shortest_path, dyn_obs_current, lanelet_network) -> bool:
-        foo = lanelet_network.lanelet_polygons
+    # def calc_new_occupancy(self, current_occupancy: Polygon, delta_pos: np.ndarray, dpsi: float) -> Polygon:
+    #     translated_occupancy = translate(current_occupancy, xoff=delta_pos[0], yoff=delta_pos[1])
+    #     return rotate(translated_occupancy, angle=dpsi, origin=translated_occupancy.centroid, use_radians=True)
+
+    def has_collision(self, shortest_path, dyn_obs_current, current_uccupancy) -> bool:
+        # test1 = (dyn_obs_current[1][0], dyn_obs_current[1][1])
+        # test2 = self.propagate_state(dyn_obs_current[1][0], dyn_obs_current[1][1], dyn_obs_current[1][2], self.depth)
+        # plot_other_cars(test1, test2, self.lanelet_network.lanelet_polygons)
+
         # TODO: needs to be implemented
         return False
 
@@ -455,7 +468,7 @@ def plot_graph(graph, lanelet_polygons, shortest_path):
         path_coords = np.array(path_coords)
         plt.plot(path_coords[:, 0], path_coords[:, 1], color="red", linewidth=1.5, marker="o", markersize=2)
 
-    # Plot static obstacles (from on_episode_init)
+    # Plot static obstacles
     for lanelet in lanelet_polygons:
         x, y = lanelet.shapely_object.exterior.xy
         plt.plot(x, y, linestyle="-", linewidth=0.8, color="darkorchid")
@@ -493,9 +506,41 @@ def plot_other_cars(init_pos, future_pos, lanelet_polygons):
     print(f"Graph saved to {filename}")
 
 
+def plot_rtree_polygons(rtree, lanelet_polygons):
+    """
+    Plot the shapely.Polygon objects stored in the R-Tree.
+    :param rtree_idx: R-Tree index containing the polygons.
+    :param title: Title of the plot.
+    """
+    plt.figure(figsize=(30, 25), dpi=250)
+    ax = plt.gca()
+
+    # Iterate through the R-Tree and plot each polygon
+    cmap = plt.cm.get_cmap("tab20")
+    for time_instance in rtree:
+        for i, polygon in enumerate(time_instance.geometries):
+            x, y = polygon.exterior.xy
+            color = cmap(i % cmap.N)
+            ax.plot(x, y, linestyle="-", linewidth=1, color=color)
+
+    # Plot static obstacles (from on_episode_init)
+    for lanelet in lanelet_polygons:
+        x, y = lanelet.shapely_object.exterior.xy
+        plt.plot(x, y, linestyle="-", linewidth=0.8, color="darkorchid")
+
+    ax.set_aspect("equal", adjustable="box")
+
+    output_dir = "/tmp"
+    os.makedirs(output_dir, exist_ok=True)
+    filename = os.path.join(output_dir, "other_cars.png")
+    plt.savefig(filename, bbox_inches="tight")  # Save the plot with tight bounding box
+    plt.close()
+    print(f"Graph saved to {filename}")
+
+
 ### BACKUP ###
 
-# # function that takes the goal and creates a list of shapely lines that mark the goal lane
+# function that takes the goal and creates a list of shapely lines that mark the goal lane
 # def define_goal_lines(self) -> List[LineString]:
 
 #     line_segments = []
@@ -528,3 +573,14 @@ def plot_other_cars(init_pos, future_pos, lanelet_polygons):
 #     print(line_segments)
 
 #     return line_segments
+
+# def propagate_state(self, x_pos: float, y_pos: float, vx: float, depth: int) -> list:
+#     propagated_states = []
+#     time_horizon = self.n_steps * float(self.dt)
+#     s = vx * time_horizon  # note: cars do not change lanes
+#     for i in range(depth):
+#         propagated_states.append(
+#             (x_pos + i * s * math.cos(self.lane_orientation), y_pos + i * s * math.sin(self.lane_orientation))
+#         )
+
+#     return propagated_states

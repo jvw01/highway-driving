@@ -14,8 +14,6 @@ from dg_commons.sim import extract_pose_from_state
 from shapely import LineString
 from shapely.geometry import Polygon
 from commonroad.scenario.lanelet import LaneletNetwork
-from shapely.affinity import translate, rotate
-from rtree import index
 
 from pdm4ar.exercises_def.ex09 import goal
 import time
@@ -263,8 +261,3 @@ def cost_function(
 #     relative_heading = lane_pose.relative_heading
 
 #     return relative_heading
-
-
-# def calc_new_occupancy(current_occupancy: Polygon, delta_pos: np.ndarray, dpsi: float) -> Polygon:
-#     translated_occupancy = translate(current_occupancy, xoff=delta_pos[0], yoff=delta_pos[1])
-#     return rotate(translated_occupancy, angle=dpsi, origin=translated_occupancy.centroid, use_radians=True)
