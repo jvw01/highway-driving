@@ -37,12 +37,16 @@ class WeightedGraph:
     adj_list: AdjacencyList
     start_node: tuple
     virtual_goal_node: tuple
+    num_goal_nodes: int
 
-    def __init__(self, graph: DiGraph, adj_list: AdjacencyList, start_node: tuple, goal_node: tuple):
+    def __init__(
+        self, graph: DiGraph, adj_list: AdjacencyList, start_node: tuple, goal_node: tuple, num_goal_nodes: int
+    ):
         self.graph = graph
         self.adj_list = adj_list
         self.start_node = start_node
         self.goal_node = goal_node
+        self.num_goal_nodes = num_goal_nodes
 
     def get_weight(self, u: tuple, v: tuple) -> float:
         """
@@ -173,6 +177,7 @@ def generate_graph(
     # start_virt_goal = time.time()
     virtual_goal_vehicle_state = VehicleState(x=0, y=0, psi=0, vx=0, delta=0)  # TODO: what values for virtual goal?
     goal_nodes = [node for node in graph.nodes if node[2] == True]  # list of all nodes on the goal lane
+    num_goal_nodes = len(goal_nodes)
     virtual_goal_node = (-1, virtual_goal_vehicle_state, False, tuple([]))  # virtual goal node
     graph.add_node(virtual_goal_node)  # virtual goal node
     for goal_node in goal_nodes:
@@ -183,7 +188,9 @@ def generate_graph(
     # create adjacency list for A* algorithm
     adj_list = {node: set(neighbors.keys()) for node, neighbors in graph.adjacency()}
 
-    return WeightedGraph(graph=graph, adj_list=adj_list, start_node=init_node, goal_node=virtual_goal_node)
+    return WeightedGraph(
+        graph=graph, adj_list=adj_list, start_node=init_node, goal_node=virtual_goal_node, num_goal_nodes=num_goal_nodes
+    )
 
 
 def cost_function(

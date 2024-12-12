@@ -199,21 +199,36 @@ class Pdm4arAgent(Agent):
 
             # find shortest path with A*
             start_astar = time.time()
-            astar_solver = Astar(weighted_graph)
-            shortest_path = astar_solver.path(start_node=weighted_graph.start_node, goal_node=weighted_graph.goal_node)
+            for _ in range(weighted_graph.num_goal_nodes):
+                astar_solver = Astar(weighted_graph)
+                shortest_path = astar_solver.path(
+                    start_node=weighted_graph.start_node, goal_node=weighted_graph.goal_node
+                )
+                # TODO: collision checking on shortest path with RTree for every time step
+                if self.has_collision(shortest_path, dyn_obs_current, self.lanelet_network):
+                    print("Collision detected. Recomputing shortest path.")
+                    # eliminate nodes and edges of the shortest path from the graph
+                    edges_to_remove = [
+                        (shortest_path[i], shortest_path[i + 1]) for i in range(0, len(shortest_path) - 1)
+                    ]
+                    weighted_graph.graph.remove_edges_from(edges_to_remove)
+                    weighted_graph.graph.remove_nodes_from(shortest_path[1:-1])  # exclude start and goal node
+                    shortest_path = []
+                    continue
+                else:
+                    # a path without collision was found
+                    break
             end_astar = time.time()
             print(f"A* took {end_astar - start_astar} seconds.")
 
-            # TODO: collision checking on shortest path with RTree for every time step
-
             # start_plot = time.time()
-            plot_adj_list(weighted_graph.graph, self.lanelet_network.lanelet_polygons, shortest_path)
+            plot_graph(weighted_graph.graph, self.lanelet_network.lanelet_polygons, shortest_path)
             # end_plot = time.time()
             # print(f"Plotting the graph took {end_plot - start_plot} seconds.")
 
             if shortest_path:  # case: A* found a path -> lane change
                 self.path = shortest_path
-                self.num_steps_path = len(shortest_path) - 1  # exlude virtual goal node
+                self.num_steps_path = len(shortest_path) - 1  # exclude virtual goal node
                 self.lane_change = True
                 self.freq_counter += 1
                 self.path_node = 1
@@ -221,7 +236,8 @@ class Pdm4arAgent(Agent):
                     acc=shortest_path[self.path_node][3][0].acc, ddelta=shortest_path[self.path_node][3][0].ddelta
                 )
 
-            else:  # continue on lane
+            else:  # continue on lane (default state)
+                print("No path found.")
                 acc = 0
                 ddelta = self.spurhalteassistent(current_state, float(sim_obs.time))  # type: ignore
                 self.freq_counter += 1
@@ -235,7 +251,7 @@ class Pdm4arAgent(Agent):
                 return VehicleCommands(
                     acc=self.path[self.path_node][3][idx].acc,
                     # ddelta=self.path[self.path_node][3][idx].ddelta,
-                    ddelta=0,  # TODO: needs to be fixed: ddelta's cannot be summed up
+                    ddelta=0,  # keep steering angle constant
                 )
 
             else:
@@ -244,9 +260,9 @@ class Pdm4arAgent(Agent):
                     self.lane_change = False
                     acc = 0
                     ddelta = self.spurhalteassistent(current_state, float(sim_obs.time))  # type: ignore
-                    print("delta:", current_state.delta)
-                    print("ddelta:", ddelta)
-                    print("psi:", current_state.psi)
+                    # print("delta:", current_state.delta)
+                    # print("ddelta:", ddelta)
+                    # print("psi:", current_state.psi)
                     self.freq_counter += 1
                     return VehicleCommands(acc, ddelta)  # self.spurhalteassistent(current_state, float(sim_obs.time)))
                 else:
@@ -256,23 +272,25 @@ class Pdm4arAgent(Agent):
                     # )
                     return VehicleCommands(
                         acc=self.path[self.path_node][3][0].acc, ddelta=0
-                    )  # TODO: needs to be fixed: ddelta's cannot be summed up
+                    )  # keep the steering angle constant
 
         else:  # default case: continue on lane
-            # TODO: if stable and not on goal lane -> recompute graph; if stable and on goal lane -> abstandhalteassistent
+            # check if car is on goal lane
+            player_lanelet_id = self.lanelet_network.find_lanelet_by_position(
+                [np.array([current_state.x, current_state.y])]
+            )
+
+            if player_lanelet_id[0][0] == self.goal_id:
+                # TODO: we are on goal lane -> continue until the end!
+                pass
+            else:
+                # TODO: need to do something else
+                pass
+
             acc = 0  # type: ignore
             ddelta = self.spurhalteassistent(current_state, float(sim_obs.time))  # type: ignore
             self.freq_counter += 1
             return VehicleCommands(acc, ddelta)  # self.spurhalteassistent(current_state, float(sim_obs.time)))
-
-        # if float(sim_obs.time) < 0.7:
-        #     return VehicleCommands(acc=0.0, ddelta=-0.3)
-        # return VehicleCommands(
-        #     acc=0.0, ddelta=self.spurassistehaltent(current_state, self.K_psi, self.K_dist, self.K_delta)
-        # )  # , lights=LightsCmd("turn_left"))
-        # acc = self.abstandhalteassistent(current_state, sim_obs.players)
-        # ddelta = self.spurhalteassistent(current_state, float(sim_obs.time))
-        # return VehicleCommands(acc, ddelta)  # self.spurhalteassistent(current_state, float(sim_obs.time)))
 
     def retrieve_goal_lane_ids(self) -> list:
         goal_lane_ids = [self.goal_id]
@@ -294,6 +312,11 @@ class Pdm4arAgent(Agent):
             )
 
         return propagated_states
+
+    def has_collision(self, shortest_path, dyn_obs_current, lanelet_network) -> bool:
+        foo = lanelet_network.lanelet_polygons
+        # TODO: needs to be implemented
+        return False
 
     def spurhalteassistent(self, current_state: VehicleState, t: float) -> float:
         cur_lanelet_id = self.lanelet_network.find_lanelet_by_position([np.array([current_state.x, current_state.y])])
@@ -393,7 +416,7 @@ import time
 from matplotlib.collections import LineCollection
 
 
-def plot_adj_list(graph, lanelet_polygons, shortest_path):
+def plot_graph(graph, lanelet_polygons, shortest_path):
     plt.figure(figsize=(30, 25), dpi=250)
     ax = plt.gca()
 
@@ -445,6 +468,7 @@ def plot_adj_list(graph, lanelet_polygons, shortest_path):
     plt.savefig(filename, bbox_inches="tight")  # Save the plot with tight bounding box
     plt.close()
     print(f"Graph saved to {filename}")
+
 
 def plot_other_cars(init_pos, future_pos, lanelet_polygons):
     plt.figure(figsize=(30, 25), dpi=250)
