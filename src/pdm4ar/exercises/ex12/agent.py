@@ -223,7 +223,7 @@ class Pdm4arAgent(Agent):
             print(f"A* took {end_astar - start_astar} seconds.")
 
             self.plot_collisions(
-                states_dyn_obs, self.lanelet_network.lanelet_polygons, shortest_path, states_dyn_obs, current_occupancy
+                states_dyn_obs, self.lanelet_network.lanelet_polygons, shortest_path, dyn_obs_current, current_occupancy
             )
 
             # start_plot = time.time()
@@ -307,7 +307,7 @@ class Pdm4arAgent(Agent):
     def states_other_cars(self, dyn_obs_current: list) -> list:
         states_other_cars = []
         time_horizon = self.n_steps * float(self.dt)  # time horizon for one motion primitive
-        for i in range(self.depth):
+        for i in range(1, self.depth):
             states_i = []
             for dyn_obs in dyn_obs_current:
                 vx = dyn_obs[2]
@@ -327,7 +327,7 @@ class Pdm4arAgent(Agent):
         return rotate(translated_occupancy, angle=dpsi, origin=translated_occupancy.centroid, use_radians=True)
 
     def has_collision(self, shortest_path: list, states_other_cars: list, occupancy: Polygon) -> bool:
-        for i in range(1, len(shortest_path) - 1):  # exclude start and goal node
+        for i in range(len(shortest_path) - 1):  # exclude start and goal node
             strtree = states_other_cars[i]
             delta_pos = np.array(
                 [shortest_path[i][1].x - shortest_path[i - 1][1].x, shortest_path[i][1].y - shortest_path[i - 1][1].y]
@@ -442,22 +442,26 @@ class Pdm4arAgent(Agent):
         plt.figure(figsize=(30, 25), dpi=250)
         ax = plt.gca()
 
+        # init occupancy other cars
+        for car in states_other_cars:
+            x, y = car[3].exterior.xy
+            ax.plot(x, y, linestyle="-", linewidth=1, color="red")
+
         # Iterate through the R-Tree and plot each polygon
         cmap = plt.cm.get_cmap("tab20")
         for k, time_instance in enumerate(rtree):
-            if k == len(shortest_path) - 1:  # exclude virtual goal node
+            if k + 1 == len(shortest_path) - 1:  # exclude start and goal node
                 break
             for i, polygon in enumerate(time_instance.geometries):
                 x, y = polygon.exterior.xy
                 color = cmap(i % cmap.N)
                 ax.plot(x, y, linestyle="-", linewidth=1, color=color)
 
-        # init occupancy
+        # init occupancy my car
         x, y = occupancy.exterior.xy
-        ax.plot(x, y, linestyle="-", linewidth=1, color="blue")
-        
+        ax.plot(x, y, linestyle="-", linewidth=1, color="red")
+
         for i in range(1, len(shortest_path) - 1):  # exclude start and goal node
-            rtree = states_other_cars[i]
             delta_pos = np.array(
                 [shortest_path[i][1].x - shortest_path[i - 1][1].x, shortest_path[i][1].y - shortest_path[i - 1][1].y]
             )
@@ -475,7 +479,7 @@ class Pdm4arAgent(Agent):
 
         output_dir = "/tmp"
         os.makedirs(output_dir, exist_ok=True)
-        filename = os.path.join(output_dir, "other_cars.png")
+        filename = os.path.join(output_dir, "plot_collisions.png")
         plt.savefig(filename, bbox_inches="tight")  # Save the plot with tight bounding box
         plt.close()
         print(f"Graph saved to {filename}")
@@ -542,29 +546,6 @@ def plot_graph(graph, lanelet_polygons, shortest_path):
     print(f"Graph saved to {filename}")
 
 
-def plot_other_cars(init_pos, future_pos, lanelet_polygons):
-    plt.figure(figsize=(30, 25), dpi=250)
-    ax = plt.gca()
-
-    # Plot static obstacles (from on_episode_init)
-    for lanelet in lanelet_polygons:
-        x, y = lanelet.shapely_object.exterior.xy
-        plt.plot(x, y, linestyle="-", linewidth=0.8, color="darkorchid")
-
-    plt.scatter(init_pos[0], init_pos[1], color="red", s=10)
-    for pos in future_pos:
-        plt.scatter(pos[0], pos[1], color="red", s=10)
-
-    ax.set_aspect("equal", adjustable="box")
-
-    output_dir = "/tmp"
-    os.makedirs(output_dir, exist_ok=True)
-    filename = os.path.join(output_dir, "other_cars.png")
-    plt.savefig(filename, bbox_inches="tight")  # Save the plot with tight bounding box
-    plt.close()
-    print(f"Graph saved to {filename}")
-
-
 ### BACKUP ###
 
 # function that takes the goal and creates a list of shapely lines that mark the goal lane
@@ -611,3 +592,25 @@ def plot_other_cars(init_pos, future_pos, lanelet_polygons):
 #         )
 
 #     return propagated_states
+
+# def plot_other_cars(init_pos, future_pos, lanelet_polygons):
+#     plt.figure(figsize=(30, 25), dpi=250)
+#     ax = plt.gca()
+
+#     # Plot static obstacles (from on_episode_init)
+#     for lanelet in lanelet_polygons:
+#         x, y = lanelet.shapely_object.exterior.xy
+#         plt.plot(x, y, linestyle="-", linewidth=0.8, color="darkorchid")
+
+#     plt.scatter(init_pos[0], init_pos[1], color="red", s=10)
+#     for pos in future_pos:
+#         plt.scatter(pos[0], pos[1], color="red", s=10)
+
+#     ax.set_aspect("equal", adjustable="box")
+
+#     output_dir = "/tmp"
+#     os.makedirs(output_dir, exist_ok=True)
+#     filename = os.path.join(output_dir, "other_cars.png")
+#     plt.savefig(filename, bbox_inches="tight")  # Save the plot with tight bounding box
+#     plt.close()
+#     print(f"Graph saved to {filename}")
