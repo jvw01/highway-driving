@@ -168,77 +168,59 @@ class Pdm4arAgent(Agent):
             )
             mpg = MotionPrimitivesGenerator(param=mpg_params, vehicle_dynamics=bd.successor, vehicle_param=self.vp)
 
-            # generate motion primitives for different steering angles
-            # 1. delta=0, 2. delta=steer_range_min, 3. delta=steer_range_max
-            # note: need to change lanes in max 2 steps after changing delta from 0 to steer_range_min/steer_range_max!!!
-            end_states_traj, controls_traj = generate_primat(
-                x0=current_state,
-                mpg=mpg,
-                steer_range=self.steer_range,
-                n_steer=self.n_steer,
-                goal_lane=self.goal_lane,
-            )
+            # need 4 motion primitives to change lanes
+            end_states = []
+            control_inputs = []
+            state = current_state
 
-            if self.goal_lane == "left":
-                dx_left = end_states_traj[1].x - current_state.x
-                dy_left = end_states_traj[1].y - current_state.y
-                dpsi_left = end_states_traj[1].psi - current_state.psi
-                ddelta_left = end_states_traj[1].delta - current_state.delta
+            for i in range(4):
+                end_state, control_input = generate_primat(
+                    x0=state,
+                    mpg=mpg,
+                    steer_range=self.steer_range,
+                    goal_lane=self.goal_lane,
+                    case=i,
+                )
+
+                end_states.append(end_state)
+                control_inputs.append(control_input)
+
+                if i == 3:  # to avoid unncecessary computations
+                    break
+
+                dx = end_state[-1].x - current_state.x
+                dy = end_state[-1].y - current_state.y
+                dpsi = end_state[-1].psi - current_state.psi
+                ddelta = end_state[-1].delta - current_state.delta
 
                 delta_pos = np.array(
                     [
-                        dx_left * np.cos(current_state.psi - self.lane_orientation)
-                        - dy_left * np.sin(current_state.psi - self.lane_orientation),
-                        dy_left * np.cos(current_state.psi - self.lane_orientation)
-                        + dx_left * np.sin(current_state.psi - self.lane_orientation),
+                        dx * np.cos(current_state.psi - self.lane_orientation)
+                        - dy * np.sin(current_state.psi - self.lane_orientation),
+                        dy * np.cos(current_state.psi - self.lane_orientation)
+                        + dx * np.sin(current_state.psi - self.lane_orientation),
                     ]
                 )
 
-                state_left = VehicleState(
+                state = VehicleState(
                     x=current_state.x + delta_pos[0],
                     y=current_state.y + delta_pos[1],
-                    psi=current_state.psi + dpsi_left,
+                    psi=current_state.psi + dpsi,
                     vx=current_state.vx,
-                    delta=current_state.delta + ddelta_left,
-                )
-                delta_curve, control_curve = generate_primat_curve(x0=state_left, mpg=mpg)
-
-            else:
-                dx_right = end_states_traj[1].x - current_state.x
-                dy_right = end_states_traj[1].y - current_state.y
-                dpsi_right = end_states_traj[1].psi - current_state.psi
-                ddelta_right = end_states_traj[1].delta - current_state.delta
-
-                delta_pos = np.array(
-                    [
-                        dx_right * np.cos(current_state.psi - self.lane_orientation)
-                        - dy_right * np.sin(current_state.psi - self.lane_orientation),
-                        dy_right * np.cos(current_state.psi - self.lane_orientation)
-                        + dx_right * np.sin(current_state.psi - self.lane_orientation),
-                    ]
+                    delta=current_state.delta + ddelta,
                 )
 
-                state_right = VehicleState(
-                    x=current_state.x + delta_pos[0],
-                    y=current_state.y + delta_pos[1],
-                    psi=current_state.psi + dpsi_right,
-                    vx=current_state.vx,
-                    delta=current_state.delta + ddelta_right,
-                )
-                delta_curve, control_curve = generate_primat_curve(x0=state_right, mpg=mpg)
+            # plot_end_states(end_states, self.lanelet_network.lanelet_polygons)
 
             # build graph
             self.depth = 8  # TODO: default value - need to decide how deep we want our graph to be
             start = time.time()
             weighted_graph = generate_graph(
                 current_state=current_state,
-                end_states_traj=end_states_traj,
-                delta_curve=delta_curve,
-                controls_traj=controls_traj,
-                control_curve=control_curve,
+                end_states_traj=end_states,
+                controls_traj=control_inputs,
                 depth=self.depth,
                 lanelet_network=self.lanelet_network,
-                half_lane_width=self.half_lane_width,
                 lane_orientation=self.lane_orientation,
                 goal_id=self.goal_lane_ids,
             )
@@ -569,6 +551,31 @@ import matplotlib.pyplot as plt
 import os
 import time
 from matplotlib.collections import LineCollection
+
+
+def plot_end_states(end_states, lanelet_polygons):
+    plt.figure(figsize=(30, 25), dpi=250)
+    ax = plt.gca()
+
+    # Plot end states
+    for state_list in end_states:
+        x_coords = [state.x for state in state_list]
+        y_coords = [state.y for state in state_list]
+        plt.scatter(x_coords, y_coords, s=1, color="blue")  # Plot points and lines
+
+    # Plot static obstacles
+    for lanelet in lanelet_polygons:
+        x, y = lanelet.shapely_object.exterior.xy
+        plt.plot(x, y, linestyle="-", linewidth=0.8, color="darkorchid")
+
+    ax.set_aspect("equal", adjustable="box")
+
+    output_dir = "/tmp"
+    os.makedirs(output_dir, exist_ok=True)
+    filename = os.path.join(output_dir, "end_states.png")
+    plt.savefig(filename, bbox_inches="tight")  # Save the plot with tight bounding box
+    plt.close()
+    print(f"Graph saved to {filename}")
 
 
 def plot_graph(graph, lanelet_polygons, shortest_path):

@@ -61,12 +61,9 @@ class WeightedGraph:
 def generate_graph(
     current_state: VehicleState,
     end_states_traj: List[VehicleState],
-    delta_curve: list,
     controls_traj: List[List[VehicleCommands]],
-    control_curve: List[VehicleCommands],
     depth: int,
     lanelet_network: LaneletNetwork,
-    half_lane_width: float,
     lane_orientation: float,
     goal_id: list,
 ) -> WeightedGraph:
@@ -293,10 +290,10 @@ def cost_function(
 
     # speed penalty
     # start_speed = time.time()
-    v_diff = np.maximum(current_vehicle_state.vx - 25.0, 5.0 - current_vehicle_state.vx)
-    velocity_penalty = v_diff / 5.0
-    velocity_penalty = np.clip(velocity_penalty, 0.0, 1.0)
-    speed_cost = 5.0 * velocity_penalty
+    # v_diff = np.maximum(current_vehicle_state.vx - 25.0, 5.0 - current_vehicle_state.vx)
+    # velocity_penalty = v_diff / 5.0
+    # velocity_penalty = np.clip(velocity_penalty, 0.0, 1.0)
+    # speed_cost = 5.0 * velocity_penalty
     # end_speed = time.time()
     # print(f"Calculating the speed penalty took {end_speed - start_speed} seconds.")
 
@@ -314,7 +311,7 @@ def cost_function(
     heuristic_cost = (current_node[0] + 1) if current_node[2] else 0.0
     heuristic_weighting_factor = 1.0
 
-    cost = speed_cost + (heuristic_weighting_factor * heuristic_cost)
+    cost = heuristic_weighting_factor * heuristic_cost
 
     return cost
 
