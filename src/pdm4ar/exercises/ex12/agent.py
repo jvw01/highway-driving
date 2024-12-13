@@ -1,7 +1,8 @@
 from hmac import new
 from mimetypes import init
-import random
 from dataclasses import dataclass
+from re import S
+from sre_parse import State
 from tracemalloc import start
 from typing import Sequence
 
@@ -22,12 +23,10 @@ from dg_commons.planning.motion_primitives import MotionPrimitivesGenerator, MPG
 from dg_commons.sim.models.vehicle import VehicleState, VehicleModel
 from decimal import Decimal
 from dg_commons import logger, Timestamp, LinSpaceTuple
-import math
 from dg_commons.sim.models.model_utils import apply_full_acceleration_limits
 from dg_commons.dynamics import BicycleDynamics
 import frozendict
 from matplotlib import markers
-import numpy as np
 from shapely import linestrings
 from sympy import Mul, primitive
 from dataclasses import dataclass
@@ -40,24 +39,32 @@ from dg_commons.sim.models import vehicle_ligths
 from dg_commons.sim.models.vehicle_ligths import LightsCmd
 from networkx import DiGraph
 from shapely.geometry import Polygon
-import time
 from matplotlib.collections import LineCollection
 from shapely.geometry import LineString
-
-from .graph import WeightedGraph
-from .astar import Astar
-import time
 from dg_commons.controllers.pid import PID
 from dg_commons.controllers.steer import SteerController
 from dg_commons.controllers.pure_pursuit import PurePursuit
 from geometry.types import SE2value, E2value
+import numpy as np
+import math
+import time
+import random
+import enum
 from shapely.affinity import translate, rotate
 from shapely.strtree import STRtree
 
 
+from .graph import WeightedGraph, generate_graph
 from .motion_primitves import generate_primat
-from .graph import generate_graph
+from .astar import Astar
 
+class StateMachine(enum.Enum):
+    INITIALIZATION = 1
+    ATTEMPT_LANE_CHANGE = 2
+    EXECUTE_LANE_CHANGE = 3
+    HOLD_LANE = 4
+    GOAL_STATE = 5
+    
 
 @dataclass(frozen=True)
 class Pdm4arAgentParams:
@@ -125,11 +132,13 @@ class Pdm4arAgent(Agent):
         # self.lane_orientation = init_obs.goal.ref_lane.control_points[
         #     0
         # ].q.theta  # note: the lane is not entirely straight
-        self.further_initialization = True  # boolean to further initialize parameters in the first call of get_commands
-        self.recompute = True  # boolean value that indicates if the graph needs to be recomputed
+        self.state = StateMachine.INITIALIZATION
         self.goal_lane_ids = self.retrieve_goal_lane_ids()
         self.steer_controller = SteerController.from_vehicle_params(vehicle_param=self.vp)
         self.freq_counter = 0
+        self.shortest_path = []
+
+
 
     def get_commands(self, sim_obs: SimObservations) -> VehicleCommands:
         """This method is called by the simulator every dt_commands seconds (0.1s by default).
@@ -142,14 +151,19 @@ class Pdm4arAgent(Agent):
         """
         current_state = sim_obs.players["Ego"].state  # type: ignore
 
-        if self.further_initialization:
+        if self.state == StateMachine.INITIALIZATION:
             self.lane_orientation = sim_obs.players[
                 "Ego"
             ].state.psi  # type: ignore # assuming that lane orientation == initial orientation vehicle
-            self.further_initialization = False
+            self.state = StateMachine.ATTEMPT_LANE_CHANGE
 
-        if self.recompute:
-            self.recompute = False
+        if self.state == StateMachine.ATTEMPT_LANE_CHANGE:
+            # get current lane by using the current position
+            # current_pos = np.array([sim_obs.players[self.name].state.x, sim_obs.players[self.name].state.y])
+            # try:
+            #     self.current_lanelet_id = self.lanelet_network.find_lanelet_by_position([current_pos])[0][0]
+            # except IndexError:
+            #     print("No lanelet found or out of bounds")
 
             # calculate the motion primitives once
             bd = BicycleDynamics(self.vg, self.vp)
@@ -201,27 +215,28 @@ class Pdm4arAgent(Agent):
             start_astar = time.time()
             for _ in range(weighted_graph.num_goal_nodes):
                 astar_solver = Astar(weighted_graph)
-                shortest_path = astar_solver.path(
+                self.shortest_path = astar_solver.path(
                     start_node=weighted_graph.start_node, goal_node=weighted_graph.goal_node
                 )
                 # TODO: collision checking on shortest path with RTree for every time step
                 if self.has_collision(
-                    shortest_path=shortest_path, states_other_cars=states_dyn_obs, occupancy=current_occupancy
+                    shortest_path=self.shortest_path, states_other_cars=states_dyn_obs, occupancy=current_occupancy
                 ):
                     print("Collision detected. Recomputing shortest path.")
                     # eliminate nodes and edges of the shortest path from the graph
                     edges_to_remove = [
-                        (shortest_path[i], shortest_path[i + 1]) for i in range(0, len(shortest_path) - 1)
+                        (self.shortest_path[i], self.shortest_path[i + 1]) for i in range(0, len(self.shortest_path) - 1)
                     ]
                     weighted_graph.graph.remove_edges_from(edges_to_remove)
-                    weighted_graph.graph.remove_nodes_from(shortest_path[1:-1])  # exclude start and goal node
-                    shortest_path = []
+                    weighted_graph.graph.remove_nodes_from(self.shortest_path[1:-1])  # exclude start and goal node
+                    self.shortest_path = []
                     continue
                 else:
                     # a path without collision was found
                     print("Found path without collision.")
                     break
 
+            self.state = StateMachine.HOLD_LANE if not self.shortest_path else StateMachine.EXECUTE_LANE_CHANGE
             end_astar = time.time()
             print(f"A* took {end_astar - start_astar} seconds.")
 
@@ -230,72 +245,59 @@ class Pdm4arAgent(Agent):
             )
 
             # start_plot = time.time()
-            plot_graph(weighted_graph.graph, self.lanelet_network.lanelet_polygons, shortest_path)
+            plot_graph(weighted_graph.graph, self.lanelet_network.lanelet_polygons, self.shortest_path)
             # end_plot = time.time()
             # print(f"Plotting the graph took {end_plot - start_plot} seconds.")
 
-            if shortest_path:  # case: A* found a path -> lane change
-                self.path = shortest_path
-                self.num_steps_path = len(shortest_path) - 1  # exclude virtual goal node
-                self.lane_change = True
-                self.freq_counter += 1
-                self.path_node = 1
-                return VehicleCommands(
-                    acc=shortest_path[self.path_node][3][0].acc, ddelta=shortest_path[self.path_node][3][0].ddelta
-                )
-
-            else:  # continue on lane (default state)
-                print("No path found.")
-                acc = 0
-                ddelta = self.spurhalteassistent(current_state, float(sim_obs.time))  # type: ignore
-                self.freq_counter += 1
-                return VehicleCommands(acc, ddelta)  # self.spurhalteassistent(current_state, float(sim_obs.time)))
-
-        # extract correct vehicle commands
-        if self.lane_change:
-            idx = self.freq_counter % (self.n_steps + 1)
+        if self.state == StateMachine.EXECUTE_LANE_CHANGE:  # case: A* found a path -> lane change
+            self.num_steps_path = len(self.shortest_path) - 1  # exclude virtual goal node
+            self.freq_counter += 1
+            self.path_node = 1
+            idx = self.freq_counter % (self.n_steps + 1) # TODO +1?? idx = 0 if self.freq_counter is multiple of 5 (i.e., 0, 5, 10)
+            
+            # remain in EXECUTE_LANE_CHANGE state as we are inbetween graph nodes
             if idx != 0:  # TODO: correct? - still want to execute the nth step
                 self.freq_counter += 1
                 return VehicleCommands(
-                    acc=self.path[self.path_node][3][idx].acc,
-                    # ddelta=self.path[self.path_node][3][idx].ddelta,
-                    ddelta=0,  # keep steering angle constant
+                    acc=self.shortest_path[self.path_node][3][idx].acc, ddelta=self.shortest_path[self.path_node][3][idx].ddelta,
                 )
-
+            
+            # new graph node reached, switch to HOLD_LANE if we're at the goal node, else we stay until the goal node is reached
             else:
                 self.path_node += 1
-                if self.path_node == self.num_steps_path:  # end of lane change
-                    self.lane_change = False
+                if self.path_node == self.num_steps_path:  # goal node reached
+                    self.state = StateMachine.HOLD_LANE
                     acc = 0
                     ddelta = self.spurhalteassistent(current_state, float(sim_obs.time))  # type: ignore
                     self.freq_counter += 1
                     return VehicleCommands(acc, ddelta)  # self.spurhalteassistent(current_state, float(sim_obs.time)))
                 else:
                     self.freq_counter += 1
-                    # return VehicleCommands(
-                    #     acc=self.path[self.path_node][3][0].acc, ddelta=self.path[self.path_node][3][0].ddelta
-                    # )
                     return VehicleCommands(
-                        acc=self.path[self.path_node][3][0].acc, ddelta=0
-                    )  # keep the steering angle constant
+                        acc=self.shortest_path[self.path_node][3][idx].acc, ddelta=self.shortest_path[self.path_node][3][idx].ddelta
+                    ) 
 
-        else:  # default case: continue on lane
+        if self.state == StateMachine.HOLD_LANE:  # default case: continue on lane
             # check if car is on goal lane
             player_lanelet_id = self.lanelet_network.find_lanelet_by_position(
                 [np.array([current_state.x, current_state.y])]
             )
 
             if player_lanelet_id[0][0] == self.goal_id:
-                # TODO: we are on goal lane -> continue until the end!
-                pass
-            else:
-                # TODO: need to do something else
-                pass
+                self.state = StateMachine.GOAL_STATE
 
             acc = 0  # type: ignore
             ddelta = self.spurhalteassistent(current_state, float(sim_obs.time))  # type: ignore
             self.freq_counter += 1
             return VehicleCommands(acc, ddelta)  # self.spurhalteassistent(current_state, float(sim_obs.time)))
+        
+        if self.state == StateMachine.GOAL_STATE:
+            acc = 0  # type: ignore
+            ddelta = self.spurhalteassistent(current_state, float(sim_obs.time))  # type: ignore
+            self.freq_counter += 1
+            return VehicleCommands(acc, ddelta)  # self.spurhalteassistent(current_state, float(sim_obs.time)))
+
+
 
     def retrieve_goal_lane_ids(self) -> list:
         goal_lane_ids = [self.goal_id]
