@@ -61,7 +61,9 @@ class WeightedGraph:
 def generate_graph(
     current_state: VehicleState,
     end_states_traj: List[VehicleState],
+    delta_curve: list,
     controls_traj: List[List[VehicleCommands]],
+    control_curve: List[VehicleCommands],
     depth: int,
     lanelet_network: LaneletNetwork,
     half_lane_width: float,
@@ -72,88 +74,156 @@ def generate_graph(
     graph = DiGraph()
 
     # calculate deltas
-    deltas = [
-        (state.x - current_state.x, state.y - current_state.y, state.psi - current_state.psi)
+    deltas_traj = [
+        (
+            state.x - current_state.x,
+            state.y - current_state.y,
+            state.psi - current_state.psi,
+            state.delta - current_state.delta,
+        )
         for state in end_states_traj
     ]
 
     # add root node
-    init_node = (0, current_state, False, tuple([]))
+    init_node = (0, current_state, False, tuple([]), False)
     graph.add_node(init_node)
 
     # recursive function to generate children
     def add_children(previous_node):
-        if previous_node[2]:  # if previous node is goal node, do not add children
+        # case: previous node finished lane change -> do not add children
+        if previous_node[4]:
             return
 
+        # case: previous node is goal node -> do not add children
+        if previous_node[2]:
+            return
+
+        # case: depth is reached -> do not add children
         level = previous_node[0]
         if level >= depth:
             return
 
-        x = previous_node[1].x
-        y = previous_node[1].y
-        psi = previous_node[1].psi
+        x_prev = previous_node[1].x
+        y_prev = previous_node[1].y
+        psi_prev = previous_node[1].psi
+        delta_prev = previous_node[1].delta
 
-        for i, (dx, dy, dpsi) in enumerate(deltas):
-            # check if child is within lane boundaries
+        if np.abs(delta_prev) < 1e-3:
+            lane_change_done = False
+            for i, (dx, dy, dpsi, ddelta) in enumerate(deltas_traj):
+                # psi = psi_prev + dpsi
+                delta_pos = np.array(
+                    [
+                        dx * np.cos(psi_prev - lane_orientation) - dy * np.sin(psi_prev - lane_orientation),
+                        dy * np.cos(psi_prev - lane_orientation) + dx * np.sin(psi_prev - lane_orientation),
+                    ]
+                )
+
+                # find lanelet id to prepare check for goal id
+                position = np.array([x_prev, y_prev]) + delta_pos
+                lanelet_id = lanelet_network.find_lanelet_by_position([position])
+
+                if not lanelet_id[0]:
+                    continue
+
+                # control commands to get from parent to child
+                cmds = controls_traj[i]
+
+                # boolean to indicate goal node
+                is_goal = True if lanelet_id[0][0] in goal_id else False
+
+                child_vehicle_state = VehicleState(
+                    x=x_prev + delta_pos[0],
+                    y=y_prev + delta_pos[1],
+                    psi=psi_prev + dpsi,
+                    vx=current_state.vx,
+                    delta=delta_prev + ddelta,  # add ddelta
+                )
+                child = (
+                    level + 1,
+                    child_vehicle_state,
+                    is_goal,
+                    tuple(cmds),
+                    lane_change_done,
+                )  # (level, VehicleState, boolean goal, control commands)
+
+                graph.add_node(child)
+                graph.add_edge(
+                    previous_node,
+                    child,
+                    weight=cost_function(
+                        current_node=previous_node, lanelet_network=lanelet_network, lanelet_id=lanelet_id[0][0]
+                    ),
+                )
+
+                # recursively add children for child
+                add_children(child)
+
+                # # add clearance to road boundaries
+                # lanelet = lanelet_network.find_lanelet_by_id(lanelet_id[0][0])
+                # no_adjacent_left = lanelet.adj_left is None
+                # no_adjacent_right = lanelet.adj_right is None
+                # if no_adjacent_left:
+                #     # alternative way to calculate half_lane_width
+                #     # left_boundary = lanelet.left_vertices
+                #     # right_boundary = lanelet.right_vertices
+                #     # widths = [
+                #     #     np.linalg.norm(np.array([left[0], left[1]]) - np.array([right[0], right[1]]))
+                #     #     for left, right in zip(left_boundary, right_boundary)
+                #     # ]
+                #     # average_width = np.mean(widths)
+                #     # half_lane_width = average_width / 2
+                #     position[0] -= half_lane_width * np.sin(psi - lane_orientation)
+                #     position[1] += half_lane_width * np.cos(psi - lane_orientation)
+                #     lanelet_id = lanelet_network.find_lanelet_by_position([position])
+                #     if not lanelet_id[0]:
+                #         continue
+
+                # elif no_adjacent_right:
+                #     position[0] += half_lane_width * np.sin(psi - lane_orientation)
+                #     position[1] -= half_lane_width * np.cos(psi - lane_orientation)
+                #     lanelet_id = lanelet_network.find_lanelet_by_position([position])
+                #     if not lanelet_id[0]:
+                #         continue
+
+        # already started lane change
+        else:
+            lane_change_done = True
+            dx, dy, dpsi, ddelta = delta_curve
+            # psi = psi_prev + dpsi
             delta_pos = np.array(
                 [
-                    dx * np.cos(psi - lane_orientation) - dy * np.sin(psi - lane_orientation),
-                    dy * np.cos(psi - lane_orientation) + dx * np.sin(psi - lane_orientation),
+                    dx * np.cos(psi_prev - lane_orientation) - dy * np.sin(psi_prev - lane_orientation),
+                    dy * np.cos(psi_prev - lane_orientation) + dx * np.sin(psi_prev - lane_orientation),
                 ]
             )
-            position = np.array([x, y]) + delta_pos
+
+            # find lanelet id to prepare check for goal id
+            position = np.array([x_prev, y_prev]) + delta_pos
             lanelet_id = lanelet_network.find_lanelet_by_position([position])
+
             if not lanelet_id[0]:
-                continue
+                return
 
-            # add clearance to road boundaries
-            lanelet = lanelet_network.find_lanelet_by_id(lanelet_id[0][0])
-            no_adjacent_left = lanelet.adj_left is None
-            no_adjacent_right = lanelet.adj_right is None
-            if no_adjacent_left:
-                # alternative way to calculate half_lane_width
-                # left_boundary = lanelet.left_vertices
-                # right_boundary = lanelet.right_vertices
-                # widths = [
-                #     np.linalg.norm(np.array([left[0], left[1]]) - np.array([right[0], right[1]]))
-                #     for left, right in zip(left_boundary, right_boundary)
-                # ]
-                # average_width = np.mean(widths)
-                # half_lane_width = average_width / 2
-                position[0] -= half_lane_width * np.sin(psi - lane_orientation)
-                position[1] += half_lane_width * np.cos(psi - lane_orientation)
-                lanelet_id = lanelet_network.find_lanelet_by_position([position])
-                if not lanelet_id[0]:
-                    continue
-
-            elif no_adjacent_right:
-                position[0] += half_lane_width * np.sin(psi - lane_orientation)
-                position[1] -= half_lane_width * np.cos(psi - lane_orientation)
-                lanelet_id = lanelet_network.find_lanelet_by_position([position])
-                if not lanelet_id[0]:
-                    continue
-
-            # only add child if psi is acceptable
-            # if (
-            #     psi + dpsi > np.pi / 4 or psi + dpsi < -np.pi / 4
-            # ):  # TODO: necessary?, heuristically chose 45deg, needs refinement
-            #     continue
-
-            # create new child node
-            cmds = controls_traj[i]  # control commands to get from parent to child
+            # control commands to get from parent to child
+            cmds = control_curve
 
             # boolean to indicate goal node
             is_goal = True if lanelet_id[0][0] in goal_id else False
 
             child_vehicle_state = VehicleState(
-                x=x + delta_pos[0], y=y + delta_pos[1], psi=psi + dpsi, vx=current_state.vx, delta=current_state.delta
+                x=x_prev + delta_pos[0],
+                y=y_prev + delta_pos[1],
+                psi=psi_prev + dpsi,
+                vx=current_state.vx,
+                delta=delta_prev + ddelta,  # add ddelta
             )
             child = (
                 level + 1,
                 child_vehicle_state,
                 is_goal,
                 tuple(cmds),
+                lane_change_done,
             )  # (level, VehicleState, boolean goal, control commands)
 
             graph.add_node(child)
@@ -172,7 +242,7 @@ def generate_graph(
 
     # add virtual goal node
     # start_virt_goal = time.time()
-    virtual_goal_vehicle_state = VehicleState(x=0, y=0, psi=0, vx=0, delta=0)  # TODO: what values for virtual goal?
+    virtual_goal_vehicle_state = VehicleState(x=0, y=0, psi=0, vx=0, delta=0)
     goal_nodes = [node for node in graph.nodes if node[2] == True]  # list of all nodes on the goal lane
     num_goal_nodes = len(goal_nodes)
     virtual_goal_node = (-1, virtual_goal_vehicle_state, False, tuple([]))  # virtual goal node

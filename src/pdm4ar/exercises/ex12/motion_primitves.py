@@ -11,6 +11,7 @@ def generate_primat(
     mpg: MotionPrimitivesGenerator,
     steer_range: float,
     n_steer: int,
+    goal_lane: str,
 ) -> tuple[List[VehicleState], List[List[VehicleCommands]]]:
     """
     Reimplement method mpg.generate(x) to generate motion primitives specifically for our problem.
@@ -20,13 +21,19 @@ def generate_primat(
 
     # create samples in user-defined range - assume constant velocity and variable steering angles
     v_samples = np.array([x0.vx])
-    sa_samples = np.linspace(
-        *(x0.delta - steer_range, x0.delta + steer_range, n_steer)
-    )  # TODO: need to check if steering angle is valid
+    if goal_lane == "left":
+        sa_samples = [x0.delta, x0.delta + steer_range]
+    else:
+        sa_samples = [x0.delta, x0.delta - steer_range]
+
+    # sa_samples = np.linspace(
+    #     *(x0.delta - steer_range, x0.delta + steer_range, n_steer)
+    # )  # TODO: need to check if steering angle is valid
+
+    horizon = float(mpg.param.dt * mpg.param.n_steps)
 
     for v_sample, sa_sample in product(v_samples, sa_samples):
         # calculate acceleration and steering angle rate
-        horizon = float(mpg.param.dt * mpg.param.n_steps)
         acc = (v_sample - x0.vx) / horizon
         sa_rate = (sa_sample - x0.delta) / horizon
 
@@ -47,3 +54,26 @@ def generate_primat(
         controls_traj.append(control_inputs)
 
     return end_states_traj, controls_traj
+
+
+def generate_primat_curve(
+    x0: VehicleState,
+    mpg: MotionPrimitivesGenerator,
+) -> tuple[list, List[VehicleCommands]]:
+    """
+    Reimplement method mpg.generate(x) to generate motion primitives specifically for our problem.
+    """
+    # vehicle commands to follow trajectory - continue with same velocity and steering angle
+    cmds = VehicleCommands(acc=0, ddelta=0)
+
+    # initial values
+    control_inputs = [cmds]
+    next_state = x0
+
+    for _ in range(1, mpg.param.n_steps + 1):
+        next_state = mpg.vehicle_dynamics(next_state, cmds, float(mpg.param.dt))
+        control_inputs.append(cmds)
+
+    delta = [next_state.x - x0.x, next_state.y - x0.y, next_state.psi - x0.psi, next_state.delta - x0.delta]
+
+    return delta, control_inputs

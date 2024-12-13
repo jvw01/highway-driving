@@ -55,7 +55,7 @@ from shapely.affinity import translate, rotate
 from shapely.strtree import STRtree
 
 
-from .motion_primitves import generate_primat
+from .motion_primitves import generate_primat, generate_primat_curve
 from .graph import generate_graph
 
 
@@ -115,7 +115,7 @@ class Pdm4arAgent(Agent):
         # additional class variables
         # TODO: default values for testing
         self.n_vel = 1
-        self.steer_range = 0.3
+        self.steer_range = 0.15
         self.n_steer = 3
         self.n_steps = 5
 
@@ -143,10 +143,20 @@ class Pdm4arAgent(Agent):
         current_state = sim_obs.players["Ego"].state  # type: ignore
 
         if self.further_initialization:
-            self.lane_orientation = sim_obs.players[
-                "Ego"
-            ].state.psi  # type: ignore # assuming that lane orientation == initial orientation vehicle
             self.further_initialization = False
+
+            # get lane orientation - assuming that lane orientation == initial orientation vehicle
+            self.lane_orientation = sim_obs.players["Ego"].state.psi  # type: ignore
+
+            # check whether goal lane is left or right of current lane
+            lanelet_id = self.lanelet_network.find_lanelet_by_position([np.array([current_state.x, current_state.y])])[
+                0
+            ][0]
+            lanelet = self.lanelet_network.find_lanelet_by_id(lanelet_id)
+            if lanelet.adj_left in self.goal_lane_ids:
+                self.goal_lane = "left"
+            else:
+                self.goal_lane = "right"
 
         if self.recompute:
             self.recompute = False
@@ -161,48 +171,76 @@ class Pdm4arAgent(Agent):
             # generate motion primitives for different steering angles
             # 1. delta=0, 2. delta=steer_range_min, 3. delta=steer_range_max
             # note: need to change lanes in max 2 steps after changing delta from 0 to steer_range_min/steer_range_max!!!
-            end_states_traj_straight, controls_traj_straight = generate_primat(
-                x0=current_state, mpg=mpg, steer_range=self.steer_range, n_steer=self.n_steer
+            end_states_traj, controls_traj = generate_primat(
+                x0=current_state,
+                mpg=mpg,
+                steer_range=self.steer_range,
+                n_steer=self.n_steer,
+                goal_lane=self.goal_lane,
             )
 
-            dpsi_left = end_states_traj_straight[0].psi - current_state.psi
-            state_left = VehicleState(
-                x=current_state.x,
-                y=current_state.y,
-                psi=current_state.psi + dpsi_left,
-                vx=current_state.vx,
-                delta=current_state.delta - self.steer_range,
-            )
-            end_states_traj_left, controls_traj_left = generate_primat(
-                x0=state_left, mpg=mpg, steer_range=self.steer_range, n_steer=self.n_steer
-            )
+            if self.goal_lane == "left":
+                dx_left = end_states_traj[1].x - current_state.x
+                dy_left = end_states_traj[1].y - current_state.y
+                dpsi_left = end_states_traj[1].psi - current_state.psi
+                ddelta_left = end_states_traj[1].delta - current_state.delta
 
-            dpsi_right = end_states_traj_straight[2].psi - current_state.psi
-            state_right = VehicleState(
-                x=current_state.x,
-                y=current_state.y,
-                psi=current_state.psi + dpsi_right,
-                vx=current_state.vx,
-                delta=current_state.delta + self.steer_range,
-            )
-            end_states_traj_right, controls_traj_right = generate_primat(
-                x0=state_right, mpg=mpg, steer_range=self.steer_range, n_steer=self.n_steer
-            )
+                delta_pos = np.array(
+                    [
+                        dx_left * np.cos(current_state.psi - self.lane_orientation)
+                        - dy_left * np.sin(current_state.psi - self.lane_orientation),
+                        dy_left * np.cos(current_state.psi - self.lane_orientation)
+                        + dx_left * np.sin(current_state.psi - self.lane_orientation),
+                    ]
+                )
 
-            
+                state_left = VehicleState(
+                    x=current_state.x + delta_pos[0],
+                    y=current_state.y + delta_pos[1],
+                    psi=current_state.psi + dpsi_left,
+                    vx=current_state.vx,
+                    delta=current_state.delta + ddelta_left,
+                )
+                delta_curve, control_curve = generate_primat_curve(x0=state_left, mpg=mpg)
+
+            else:
+                dx_right = end_states_traj[1].x - current_state.x
+                dy_right = end_states_traj[1].y - current_state.y
+                dpsi_right = end_states_traj[1].psi - current_state.psi
+                ddelta_right = end_states_traj[1].delta - current_state.delta
+
+                delta_pos = np.array(
+                    [
+                        dx_right * np.cos(current_state.psi - self.lane_orientation)
+                        - dy_right * np.sin(current_state.psi - self.lane_orientation),
+                        dy_right * np.cos(current_state.psi - self.lane_orientation)
+                        + dx_right * np.sin(current_state.psi - self.lane_orientation),
+                    ]
+                )
+
+                state_right = VehicleState(
+                    x=current_state.x + delta_pos[0],
+                    y=current_state.y + delta_pos[1],
+                    psi=current_state.psi + dpsi_right,
+                    vx=current_state.vx,
+                    delta=current_state.delta + ddelta_right,
+                )
+                delta_curve, control_curve = generate_primat_curve(x0=state_right, mpg=mpg)
 
             # build graph
             self.depth = 8  # TODO: default value - need to decide how deep we want our graph to be
             start = time.time()
             weighted_graph = generate_graph(
-                current_state,
-                end_states_traj,
-                controls_traj,
-                self.depth,
-                self.lanelet_network,
-                self.half_lane_width,
-                self.lane_orientation,
-                self.goal_lane_ids,
+                current_state=current_state,
+                end_states_traj=end_states_traj,
+                delta_curve=delta_curve,
+                controls_traj=controls_traj,
+                control_curve=control_curve,
+                depth=self.depth,
+                lanelet_network=self.lanelet_network,
+                half_lane_width=self.half_lane_width,
+                lane_orientation=self.lane_orientation,
+                goal_id=self.goal_lane_ids,
             )
             end = time.time()
             print(f"Generating the graph took {end - start} seconds.")
@@ -262,9 +300,13 @@ class Pdm4arAgent(Agent):
             self.plot_collisions(
                 states_dyn_obs, self.lanelet_network.lanelet_polygons, shortest_path, dyn_obs_current, current_occupancy
             )
+            # self.plot_collisions(
+            #     states_dyn_obs, self.lanelet_network.lanelet_polygons, [], dyn_obs_current, current_occupancy
+            # )
 
             # start_plot = time.time()
             plot_graph(weighted_graph.graph, self.lanelet_network.lanelet_polygons, shortest_path)
+            # plot_graph(weighted_graph.graph, self.lanelet_network.lanelet_polygons, [])
             # end_plot = time.time()
             # print(f"Plotting the graph took {end_plot - start_plot} seconds.")
 
@@ -292,8 +334,8 @@ class Pdm4arAgent(Agent):
                 self.freq_counter += 1
                 return VehicleCommands(
                     acc=self.path[self.path_node][3][idx].acc,
-                    ddelta=0,  # keep steering angle constant
-                    # ddelta=self.path[self.path_node][3][idx].ddelta,
+                    # ddelta=0,  # keep steering angle constant
+                    ddelta=self.path[self.path_node][3][idx].ddelta,
                 )
 
             else:
@@ -310,7 +352,7 @@ class Pdm4arAgent(Agent):
                     #     acc=self.path[self.path_node][3][0].acc, ddelta=self.path[self.path_node][3][0].ddelta
                     # )
                     return VehicleCommands(
-                        acc=self.path[self.path_node][3][0].acc, ddelta=0
+                        acc=self.path[self.path_node][3][idx].acc, ddelta=self.path[self.path_node][3][idx].ddelta
                     )  # keep the steering angle constant
 
         else:  # default case: continue on lane
@@ -319,12 +361,12 @@ class Pdm4arAgent(Agent):
                 [np.array([current_state.x, current_state.y])]
             )
 
-            if player_lanelet_id[0][0] == self.goal_id:
-                # TODO: we are on goal lane -> continue until the end!
-                pass
-            else:
-                # TODO: need to do something else
-                pass
+            # if player_lanelet_id[0][0] == self.goal_id:
+            #     # TODO: we are on goal lane -> continue until the end!
+            #     pass
+            # else:
+            #     # TODO: need to do something else
+            #     pass
 
             acc = 0  # type: ignore
             ddelta = self.spurhalteassistent(current_state, float(sim_obs.time))  # type: ignore
