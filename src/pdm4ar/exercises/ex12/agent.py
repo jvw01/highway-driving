@@ -157,9 +157,39 @@ class Pdm4arAgent(Agent):
                 dt=Decimal(self.dt), n_steps=self.n_steps, n_vel=self.n_vel, n_steer=self.n_steer, vp=self.vp
             )
             mpg = MotionPrimitivesGenerator(param=mpg_params, vehicle_dynamics=bd.successor, vehicle_param=self.vp)
-            end_states_traj, controls_traj = generate_primat(
+
+            # generate motion primitives for different steering angles
+            # 1. delta=0, 2. delta=steer_range_min, 3. delta=steer_range_max
+            # note: need to change lanes in max 2 steps after changing delta from 0 to steer_range_min/steer_range_max!!!
+            end_states_traj_straight, controls_traj_straight = generate_primat(
                 x0=current_state, mpg=mpg, steer_range=self.steer_range, n_steer=self.n_steer
             )
+
+            dpsi_left = end_states_traj_straight[0].psi - current_state.psi
+            state_left = VehicleState(
+                x=current_state.x,
+                y=current_state.y,
+                psi=current_state.psi + dpsi_left,
+                vx=current_state.vx,
+                delta=current_state.delta - self.steer_range,
+            )
+            end_states_traj_left, controls_traj_left = generate_primat(
+                x0=state_left, mpg=mpg, steer_range=self.steer_range, n_steer=self.n_steer
+            )
+
+            dpsi_right = end_states_traj_straight[2].psi - current_state.psi
+            state_right = VehicleState(
+                x=current_state.x,
+                y=current_state.y,
+                psi=current_state.psi + dpsi_right,
+                vx=current_state.vx,
+                delta=current_state.delta + self.steer_range,
+            )
+            end_states_traj_right, controls_traj_right = generate_primat(
+                x0=state_right, mpg=mpg, steer_range=self.steer_range, n_steer=self.n_steer
+            )
+
+            
 
             # build graph
             self.depth = 8  # TODO: default value - need to decide how deep we want our graph to be
@@ -215,6 +245,10 @@ class Pdm4arAgent(Agent):
                     ]
                     weighted_graph.graph.remove_edges_from(edges_to_remove)
                     weighted_graph.graph.remove_nodes_from(shortest_path[1:-1])  # exclude start and goal node
+                    # Update adjacency list and weights
+                    for u, v in edges_to_remove:
+                        if u in weighted_graph.adj_list:
+                            weighted_graph.adj_list[u].discard(v)
                     shortest_path = []
                     continue
                 else:
@@ -258,8 +292,8 @@ class Pdm4arAgent(Agent):
                 self.freq_counter += 1
                 return VehicleCommands(
                     acc=self.path[self.path_node][3][idx].acc,
-                    # ddelta=self.path[self.path_node][3][idx].ddelta,
                     ddelta=0,  # keep steering angle constant
+                    # ddelta=self.path[self.path_node][3][idx].ddelta,
                 )
 
             else:
@@ -315,8 +349,8 @@ class Pdm4arAgent(Agent):
             for dyn_obs in dyn_obs_current:
                 vx = dyn_obs[2]
                 s = vx * time_horizon  # note: other cars do not change lanes
-                x_off = i * s * math.cos(self.lane_orientation)
-                y_off = i * s * math.sin(self.lane_orientation)
+                x_off = 1.2 * i * s * math.cos(self.lane_orientation)
+                y_off = 1.2 * i * s * math.sin(self.lane_orientation)
                 occupancy = dyn_obs[3]
                 new_occupancy = translate(occupancy, xoff=x_off, yoff=y_off)
                 states_i.append(new_occupancy)
@@ -330,8 +364,8 @@ class Pdm4arAgent(Agent):
         return rotate(translated_occupancy, angle=dpsi, origin=translated_occupancy.centroid, use_radians=True)
 
     def has_collision(self, shortest_path: list, states_other_cars: list, occupancy: Polygon) -> bool:
-        for i in range(len(shortest_path) - 1):  # exclude start and goal node
-            strtree = states_other_cars[i]
+        for i in range(1, len(shortest_path) - 1):  # exclude start and goal node
+            strtree = states_other_cars[i - 1]
             delta_pos = np.array(
                 [shortest_path[i][1].x - shortest_path[i - 1][1].x, shortest_path[i][1].y - shortest_path[i - 1][1].y]
             )
@@ -341,7 +375,7 @@ class Pdm4arAgent(Agent):
             # check for collision with each obstacle TODO: correct?????
             candidate_indices = strtree.query(occupancy)
             for idx in candidate_indices:
-                obstacle = strtree[idx]
+                obstacle = strtree.geometries[idx]
                 if occupancy.intersects(obstacle):
                     return True
         return False

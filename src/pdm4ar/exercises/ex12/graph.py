@@ -83,12 +83,16 @@ def generate_graph(
 
     # recursive function to generate children
     def add_children(previous_node):
+        if previous_node[2]:  # if previous node is goal node, do not add children
+            return
+
         level = previous_node[0]
+        if level >= depth:
+            return
+
         x = previous_node[1].x
         y = previous_node[1].y
         psi = previous_node[1].psi
-        if level >= depth:
-            return
 
         for i, (dx, dy, dpsi) in enumerate(deltas):
             # check if child is within lane boundaries
@@ -140,16 +144,11 @@ def generate_graph(
             cmds = controls_traj[i]  # control commands to get from parent to child
 
             # boolean to indicate goal node
-            # is_goal = True if lanelet_id[0][0] in goal_id else False
             is_goal = True if lanelet_id[0][0] in goal_id else False
 
-            # start_veh = time.time()
             child_vehicle_state = VehicleState(
                 x=x + delta_pos[0], y=y + delta_pos[1], psi=psi + dpsi, vx=current_state.vx, delta=current_state.delta
             )
-            # end_veh = time.time()
-            # print(f"Generating the VehicleState took {end_veh - start_veh} seconds.")
-
             child = (
                 level + 1,
                 child_vehicle_state,
