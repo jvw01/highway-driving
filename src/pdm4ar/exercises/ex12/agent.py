@@ -452,6 +452,10 @@ class Pdm4arAgent(Agent):
                 color = cmap(i % cmap.N)
                 ax.plot(x, y, linestyle="-", linewidth=1, color=color)
 
+        # init occupancy
+        x, y = occupancy.exterior.xy
+        ax.plot(x, y, linestyle="-", linewidth=1, color="blue")
+        
         for i in range(1, len(shortest_path) - 1):  # exclude start and goal node
             rtree = states_other_cars[i]
             delta_pos = np.array(
@@ -460,8 +464,7 @@ class Pdm4arAgent(Agent):
             dpsi = shortest_path[i][1].psi - shortest_path[i - 1][1].psi
             occupancy = self.calc_new_occupancy(current_occupancy=occupancy, delta_pos=delta_pos, dpsi=dpsi)
             x, y = occupancy.exterior.xy
-            color = cmap(i % cmap.N)
-            ax.plot(x, y, linestyle="-", linewidth=1, color=color)
+            ax.plot(x, y, linestyle="-", linewidth=1, color="blue")
 
         # Plot static obstacles (from on_episode_init)
         for lanelet in lanelet_polygons:
