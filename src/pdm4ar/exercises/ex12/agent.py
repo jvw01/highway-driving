@@ -444,7 +444,9 @@ class Pdm4arAgent(Agent):
 
         # Iterate through the R-Tree and plot each polygon
         cmap = plt.cm.get_cmap("tab20")
-        for time_instance in rtree:
+        for k, time_instance in enumerate(rtree):
+            if k == len(shortest_path) - 1:  # exclude virtual goal node
+                break
             for i, polygon in enumerate(time_instance.geometries):
                 x, y = polygon.exterior.xy
                 color = cmap(i % cmap.N)
@@ -458,7 +460,8 @@ class Pdm4arAgent(Agent):
             dpsi = shortest_path[i][1].psi - shortest_path[i - 1][1].psi
             occupancy = self.calc_new_occupancy(current_occupancy=occupancy, delta_pos=delta_pos, dpsi=dpsi)
             x, y = occupancy.exterior.xy
-            ax.plot(x, y, linestyle="-", linewidth=1, color="blue")
+            color = cmap(i % cmap.N)
+            ax.plot(x, y, linestyle="-", linewidth=1, color=color)
 
         # Plot static obstacles (from on_episode_init)
         for lanelet in lanelet_polygons:
