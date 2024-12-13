@@ -241,7 +241,7 @@ class Pdm4arAgent(Agent):
             print(f"A* took {end_astar - start_astar} seconds.")
 
             self.plot_collisions(
-                states_dyn_obs, self.lanelet_network.lanelet_polygons, shortest_path, dyn_obs_current, current_occupancy
+                states_dyn_obs, self.lanelet_network.lanelet_polygons, self.shortest_path, dyn_obs_current, current_occupancy
             )
 
             # start_plot = time.time()
