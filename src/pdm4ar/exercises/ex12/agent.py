@@ -178,6 +178,7 @@ class Pdm4arAgent(Agent):
             print(f"Generating the graph took {end - start} seconds.")
 
             # extract current state of dynamic obstacles to be able to propagate them for collision checking
+            start_other_cars = time.time()
             current_occupancy = sim_obs.players["Ego"].occupancy  # type: ignore
             dyn_obs_current = []
             for player in sim_obs.players:
@@ -193,6 +194,8 @@ class Pdm4arAgent(Agent):
 
             # create rtree for dynamic obstacles at each level of the graph (i.e. prepare efficient search for collision checking)
             states_dyn_obs = self.states_other_cars(dyn_obs_current)
+            end_other_cars = time.time()
+            print(f"Generating the dynamic obstacles took {end_other_cars - start_other_cars} seconds.")
 
             # find shortest path with A*
             start_astar = time.time()
