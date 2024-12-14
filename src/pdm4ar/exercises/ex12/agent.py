@@ -55,7 +55,7 @@ from shapely.affinity import translate, rotate
 from shapely.strtree import STRtree
 
 
-from .motion_primitves import generate_primat, generate_primat_curve
+from .motion_primitves import generate_primat
 from .graph import generate_graph
 
 
@@ -114,9 +114,7 @@ class Pdm4arAgent(Agent):
 
         # additional class variables
         # TODO: default values for testing
-        self.n_vel = 1
-        self.steer_range = 0.15
-        self.n_steer = 3
+        self.steer_range = 0.3
         self.n_steps = 5
 
         self.lanelet_network = init_obs.dg_scenario.lanelet_network  # type: ignore
@@ -161,37 +159,47 @@ class Pdm4arAgent(Agent):
         if self.recompute:
             self.recompute = False
 
-            # calculate the motion primitives once
-            bd = BicycleDynamics(self.vg, self.vp)
-            mpg_params = MPGParam.from_vehicle_parameters(
-                dt=Decimal(self.dt), n_steps=self.n_steps, n_vel=self.n_vel, n_steer=self.n_steer, vp=self.vp
-            )
-            mpg = MotionPrimitivesGenerator(param=mpg_params, vehicle_dynamics=bd.successor, vehicle_param=self.vp)
-
             # need 4 motion primitives to change lanes
             end_states = []
             control_inputs = []
             state = current_state
 
-            for i in range(4):
+            # TODO: needs to be calculated based on lane change distance, speed, steering angle, etc.
+            steps_lane_change = 4  # needs to be multiple of 4
+            for i in range(steps_lane_change):
+                if i == 0:
+                    case = 0
+                else:
+                    multiples = steps_lane_change / 4
+
+                    if i < multiples:
+                        case = 1
+                    elif i < 3 * multiples:
+                        case = 2
+                    else:
+                        case = 1
+
                 end_state, control_input = generate_primat(
                     x0=state,
-                    mpg=mpg,
                     steer_range=self.steer_range,
                     goal_lane=self.goal_lane,
-                    case=i,
+                    case=case,
+                    vp=self.vp,
+                    vg=self.vg,
+                    dt=float(self.dt),
+                    n_steps=self.n_steps,
                 )
 
                 end_states.append(end_state)
                 control_inputs.append(control_input)
 
-                if i == 3:  # to avoid unncecessary computations
+                if i == steps_lane_change - 1:  # to avoid unncecessary computations
                     break
 
                 dx = end_state[-1].x - current_state.x
                 dy = end_state[-1].y - current_state.y
                 dpsi = end_state[-1].psi - current_state.psi
-                ddelta = end_state[-1].delta - current_state.delta
+                delta = end_state[-1].delta - current_state.delta
 
                 delta_pos = np.array(
                     [
@@ -207,13 +215,13 @@ class Pdm4arAgent(Agent):
                     y=current_state.y + delta_pos[1],
                     psi=current_state.psi + dpsi,
                     vx=current_state.vx,
-                    delta=current_state.delta + ddelta,
+                    delta=current_state.delta + delta,
                 )
 
-            plot_end_states(end_states, self.lanelet_network.lanelet_polygons)
+            # plot_end_states(end_states, self.lanelet_network.lanelet_polygons)
 
             # build graph
-            self.depth = 8  # TODO: default value - need to decide how deep we want our graph to be
+            self.depth = 9  # has to be greater than steps_lane_change! TODO: default value - need to decide how deep we want our graph to be
             start = time.time()
             weighted_graph = generate_graph(
                 current_state=current_state,
@@ -221,11 +229,13 @@ class Pdm4arAgent(Agent):
                 controls_traj=control_inputs,
                 depth=self.depth,
                 lanelet_network=self.lanelet_network,
-                lane_orientation=self.lane_orientation,
                 goal_id=self.goal_lane_ids,
+                steps_lane_change=steps_lane_change,
             )
             end = time.time()
             print(f"Generating the graph took {end - start} seconds.")
+
+            plot_graph(weighted_graph.graph, self.lanelet_network.lanelet_polygons, [])
 
             # extract current state of dynamic obstacles to be able to propagate them for collision checking
             start_other_cars = time.time()
@@ -281,9 +291,6 @@ class Pdm4arAgent(Agent):
 
             # self.plot_collisions(
             #     states_dyn_obs, self.lanelet_network.lanelet_polygons, shortest_path, dyn_obs_current, current_occupancy
-            # )
-            # self.plot_collisions(
-            #     states_dyn_obs, self.lanelet_network.lanelet_polygons, [], dyn_obs_current, current_occupancy
             # )
 
             # start_plot = time.time()
@@ -373,8 +380,8 @@ class Pdm4arAgent(Agent):
             for dyn_obs in dyn_obs_current:
                 vx = dyn_obs[2]
                 s = vx * time_horizon  # note: other cars do not change lanes
-                x_off = 1.2 * i * s * math.cos(self.lane_orientation)
-                y_off = 1.2 * i * s * math.sin(self.lane_orientation)
+                x_off = i * s * math.cos(self.lane_orientation)
+                y_off = i * s * math.sin(self.lane_orientation)
                 occupancy = dyn_obs[3]
                 new_occupancy = translate(occupancy, xoff=x_off, yoff=y_off)
                 states_i.append(new_occupancy)
