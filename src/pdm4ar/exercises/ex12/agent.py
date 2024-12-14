@@ -73,7 +73,7 @@ class Pdm4arAgent(Agent):
     goal: PlanningGoal
     vg: VehicleGeometry
     vp: VehicleParameters
-    dt: Decimal
+    dt: float  # Decimal
     lane_width: float
 
     # parameters for the velocity controler:
@@ -110,12 +110,13 @@ class Pdm4arAgent(Agent):
         self.goal = init_obs.goal  # type: ignore
         self.vg = init_obs.model_geometry  # type: ignore
         self.vp = init_obs.model_params  # type: ignore
-        self.dt = init_obs.dg_scenario.scenario.dt  # type: ignore
+        self.dt = 0.01  # init_obs.dg_scenario.scenario.dt  # type: ignore
 
         # additional class variables
         # TODO: default values for testing
         self.steer_range = 0.3
-        self.n_steps = 5
+        self.n_steps = int(0.5 / self.dt)  # take 0.5s steps for motion primitives; TODO: can be tuned
+        self.scaling_dt = 0.1 / self.dt  # scaling factor for dt=0.1s -> get_commands frequency
 
         self.lanelet_network = init_obs.dg_scenario.lanelet_network  # type: ignore
         self.half_lane_width = init_obs.goal.ref_lane.control_points[1].r  # type: ignore
@@ -186,8 +187,9 @@ class Pdm4arAgent(Agent):
                     case=case,
                     vp=self.vp,
                     vg=self.vg,
-                    dt=float(self.dt),
+                    dt=self.dt,
                     n_steps=self.n_steps,
+                    scaling_dt=self.scaling_dt,
                 )
 
                 end_states.append(end_state)
@@ -218,10 +220,19 @@ class Pdm4arAgent(Agent):
                     delta=current_state.delta + delta,
                 )
 
+            # n_steer = 1
+            # n_vel = 1
+            # bd = BicycleDynamics(self.vg, self.vp)
+            # mpg_params = MPGParam.from_vehicle_parameters(
+            #     dt=Decimal(self.dt), n_steps=self.n_steps, n_vel=n_vel, n_steer=n_steer, vp=self.vp
+            # )
+            # mpg = MotionPrimitivesGenerator(param=mpg_params, vehicle_dynamics=bd.successor, vehicle_param=self.vp)
+            # test = mpg.generate(x0=current_state)
+
             # plot_end_states(end_states, self.lanelet_network.lanelet_polygons)
 
             # build graph
-            self.depth = 9  # has to be greater than steps_lane_change! TODO: default value - need to decide how deep we want our graph to be
+            self.depth = 9  # note: has to be greater than steps_lane_change! TODO: default value - need to decide how deep we want our graph to be
             start = time.time()
             weighted_graph = generate_graph(
                 current_state=current_state,
@@ -318,7 +329,7 @@ class Pdm4arAgent(Agent):
 
         # extract correct vehicle commands
         if self.lane_change:
-            idx = self.freq_counter % (self.n_steps)
+            idx = int(self.freq_counter % (self.n_steps / self.scaling_dt))
             if idx != 0:  # TODO: correct? - still want to execute the nth step
                 self.freq_counter += 1
                 return VehicleCommands(
@@ -374,7 +385,7 @@ class Pdm4arAgent(Agent):
 
     def states_other_cars(self, dyn_obs_current: list) -> list:
         states_other_cars = []
-        time_horizon = self.n_steps * float(self.dt)  # time horizon for one motion primitive
+        time_horizon = self.n_steps * self.dt  # time horizon for one motion primitive
         for i in range(1, self.depth):
             states_i = []
             for dyn_obs in dyn_obs_current:
@@ -436,9 +447,9 @@ class Pdm4arAgent(Agent):
             return (
                 -1 * dpsi - 0.1 * dist - 2 * current_state.delta  # hardcoded to tune the PD controller
             )  # -self.K_psi * dpsi - self.K_dist * dist - self.K_delta * current_state.delta
-        d_dist = (dist - self.last_dist) / float(self.dt)
-        d_dpsi = (dpsi - self.last_dpsi) / float(self.dt)
-        d_delta = (current_state.delta - self.last_delta) / float(self.dt)
+        d_dist = (dist - self.last_dist) / self.dt
+        d_dpsi = (dpsi - self.last_dpsi) / self.dt
+        d_delta = (current_state.delta - self.last_delta) / self.dt
         self.last_dist = dist
         self.last_dpsi = dpsi
         self.last_delta = current_state.delta
@@ -486,7 +497,7 @@ class Pdm4arAgent(Agent):
                 return (player_ahead.state.vx / self.T + 3) * (
                     self.last_e
                 )  # P-controler for first time step, here last_e is also the current error
-            de = (e - self.last_e) / float(self.dt)
+            de = (e - self.last_e) / self.dt
             self.last_e = e
             K_p = player_ahead.state.vx / self.T + 3
             acc = K_p * (self.T * de + e)
@@ -630,6 +641,9 @@ def plot_graph(graph, lanelet_polygons, shortest_path):
         plt.plot(x, y, linestyle="-", linewidth=0.8, color="darkorchid")
 
     ax.set_aspect("equal", adjustable="box")
+
+    # Add ticks every 10 steps on the x-axis
+    ax.set_xticks(np.arange(-120, max(node_coords[:, 0]) + 10, 10))
 
     output_dir = "/tmp"
     os.makedirs(output_dir, exist_ok=True)

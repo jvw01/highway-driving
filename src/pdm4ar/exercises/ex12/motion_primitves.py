@@ -22,6 +22,7 @@ def generate_primat(
     vg: VehicleParameters,
     dt: float,
     n_steps: int,
+    scaling_dt: float,
 ) -> tuple[List[VehicleState], List[List[VehicleCommands]]]:
     """
     Reimplement method mpg.generate(x) to generate motion primitives specifically for our problem.
@@ -43,17 +44,18 @@ def generate_primat(
             # calculate acceleration and steering angle rate
             acc = (v_sample - x0.vx) / horizon
             sa_rate = (sa_sample - x0.delta) / horizon
+            check_input_constraints(acc, sa_rate, vp)
 
             # vehicle commands to follow trajectory
             cmds = VehicleCommands(acc=acc, ddelta=sa_rate)
 
             # initial values
-            control_inputs = [cmds]
+            control_inputs = int(n_steps / scaling_dt) * [cmds]
             next_state = x0
 
             for _ in range(1, n_steps + 1):
                 next_state = calc_next_state(next_state, cmds, dt, vp, vg)
-                control_inputs.append(cmds)
+                # control_inputs.append(cmds)
 
             end_states_traj.append(next_state)
             controls_traj.append(control_inputs)
@@ -69,16 +71,18 @@ def generate_primat(
         else:
             sa_rate = -steer_range / horizon
 
+        check_input_constraints(acc, sa_rate, vp)
+
         # vehicle commands to follow trajectory
         cmds = VehicleCommands(acc=acc, ddelta=sa_rate)
 
         # initial values
-        control_inputs = [cmds]
+        control_inputs = int(n_steps / scaling_dt) * [cmds]
         next_state = x0
 
         for _ in range(1, n_steps + 1):
             next_state = calc_next_state(next_state, cmds, dt, vp, vg)
-            control_inputs.append(cmds)
+            # control_inputs.append(cmds)
 
         end_states_traj.append(next_state)
         controls_traj.append(control_inputs)
@@ -94,16 +98,18 @@ def generate_primat(
         else:
             sa_rate = steer_range / horizon
 
+        check_input_constraints(acc, sa_rate, vp)
+
         # vehicle commands to follow trajectory
         cmds = VehicleCommands(acc=acc, ddelta=sa_rate)
 
         # initial values
-        control_inputs = [cmds]
+        control_inputs = int(n_steps / scaling_dt) * [cmds]
         next_state = x0
 
         for _ in range(1, n_steps + 1):
             next_state = calc_next_state(next_state, cmds, dt, vp, vg)
-            control_inputs.append(cmds)
+            # control_inputs.append(cmds)
 
         end_states_traj.append(next_state)
         controls_traj.append(control_inputs)
@@ -141,6 +147,13 @@ def dynamics(x0: VehicleState, u: VehicleCommands, vg) -> VehicleState:
     ydot = dx * sinth + dy * costh
     x_rate = VehicleState(x=xdot, y=ydot, psi=dtheta, vx=u.acc, delta=u.ddelta)
     return x_rate
+
+
+def check_input_constraints(acc, sa_rate, vp):
+    if not (-vp.ddelta_max <= sa_rate <= vp.ddelta_max):
+        print("ddelta input constraint violated")
+    if not (vp.acc_limits[0] <= acc <= vp.acc_limits[1]):
+        print("acc input constraint violated")
 
 
 ### BACKUP ###

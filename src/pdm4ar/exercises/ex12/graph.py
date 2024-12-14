@@ -178,7 +178,7 @@ def cost_function(
     # - Discomfort level (RMSE of acc)
     # (- primitive_length maybe, but it is not penalized in the perf_metrics.py)
 
-    current_vehicle_state = current_node[1]
+    # current_vehicle_state = current_node[1]
 
     # TODO implement something that lets us go to the goal, e.g. time to goal or distnace to goal
 
