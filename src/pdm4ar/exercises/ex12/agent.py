@@ -210,7 +210,7 @@ class Pdm4arAgent(Agent):
                     delta=current_state.delta + ddelta,
                 )
 
-            # plot_end_states(end_states, self.lanelet_network.lanelet_polygons)
+            plot_end_states(end_states, self.lanelet_network.lanelet_polygons)
 
             # build graph
             self.depth = 8  # TODO: default value - need to decide how deep we want our graph to be
@@ -279,9 +279,9 @@ class Pdm4arAgent(Agent):
             end_astar = time.time()
             print(f"A* took {end_astar - start_astar} seconds.")
 
-            self.plot_collisions(
-                states_dyn_obs, self.lanelet_network.lanelet_polygons, shortest_path, dyn_obs_current, current_occupancy
-            )
+            # self.plot_collisions(
+            #     states_dyn_obs, self.lanelet_network.lanelet_polygons, shortest_path, dyn_obs_current, current_occupancy
+            # )
             # self.plot_collisions(
             #     states_dyn_obs, self.lanelet_network.lanelet_polygons, [], dyn_obs_current, current_occupancy
             # )
@@ -311,7 +311,7 @@ class Pdm4arAgent(Agent):
 
         # extract correct vehicle commands
         if self.lane_change:
-            idx = self.freq_counter % (self.n_steps + 1)
+            idx = self.freq_counter % (self.n_steps)
             if idx != 0:  # TODO: correct? - still want to execute the nth step
                 self.freq_counter += 1
                 return VehicleCommands(
