@@ -53,6 +53,8 @@ import enum
 from shapely.affinity import translate, rotate
 from shapely.strtree import STRtree
 
+from pdm4ar.exercises_def.ex09 import goal
+
 
 from .graph import WeightedGraph, generate_graph
 from .motion_primitves import calc_next_state, generate_primat
@@ -242,10 +244,10 @@ class Pdm4arAgent(Agent):
             end = time.time()
             print(f"Generating the graph took {end - start} seconds.")
 
-            plot_graph(weighted_graph.graph, self.lanelet_network.lanelet_polygons, [])
+            # plot_graph(weighted_graph.graph, self.lanelet_network.lanelet_polygons, [])
 
             # extract current state of dynamic obstacles to be able to propagate them for collision checking
-            start_other_cars = time.time()
+            # start_other_cars = time.time()
             current_occupancy = sim_obs.players["Ego"].occupancy  # type: ignore
             dyn_obs_current = []
             for player in sim_obs.players:
@@ -261,8 +263,8 @@ class Pdm4arAgent(Agent):
 
             # create rtree for dynamic obstacles at each level of the graph (i.e. prepare efficient search for collision checking)
             states_dyn_obs = self.states_other_cars(dyn_obs_current)
-            end_other_cars = time.time()
-            print(f"Generating the dynamic obstacles took {end_other_cars - start_other_cars} seconds.")
+            # end_other_cars = time.time()
+            # print(f"Generating the dynamic obstacles took {end_other_cars - start_other_cars} seconds.")
 
             # find shortest path with A*
             start_astar = time.time()
@@ -374,8 +376,8 @@ class Pdm4arAgent(Agent):
         return goal_lane_ids
 
     def calc_time_horizon_and_ddelta(self, current_state: VehicleState) -> tuple[float, float]:
-        # heurisitic approach: in first motion primitive with delta_max, the car drives approximately a fifth of the lane width in y' direction
-        delta_y = self.half_lane_width * 0.4  # note: half_lane_width * 0.4 == 0.2 * lane_width == 1/5 of lane width
+        # heurisitic approach: in first motion primitive with delta_max, the car drives approximately a sixth of the lane width in y' direction
+        delta_y = self.half_lane_width * (1 / 3)
         n_steps = 0
         init_state_y = current_state.y
         next_state = VehicleState(
@@ -395,9 +397,9 @@ class Pdm4arAgent(Agent):
         goal_state_y = next_state.y
         time_horizon = np.ceil(n_steps * self.dt_integral * 10) / 10  # round to nearest multiple of 0.1
 
-        # TODO: calculate ddelta with new time horizon
+        # calculate ddelta with new time horizon
         ddelta = self.vp.ddelta_max / 2  # start with ddelta_max / 2 as init guess for correct ddelta
-        ddelta_interval = [0, self.vp.ddelta_max]
+        ddelta_interval = np.array([0, self.vp.ddelta_max])
         n_steps = int(time_horizon / self.dt_integral)
         init_state_y = current_state.y
         next_state = VehicleState(
@@ -415,14 +417,20 @@ class Pdm4arAgent(Agent):
                     next_state, VehicleCommands(acc=0, ddelta=ddelta), self.dt_integral, self.vp, self.vg
                 )
 
-            if np.abs(goal_state_y) - np.abs(next_state.y) > 0:
-                ddelta_prev = ddelta
-                ddelta -= np.mean(ddelta_interval) / 2
-                ddelta_interval = [ddelta, ddelta_prev]
+            if goal_state_y > 0:
+                if goal_state_y - next_state.y > 0:
+                    ddelta_interval = np.array([ddelta, ddelta_interval[1]])
+                    ddelta = np.mean(ddelta_interval)
+                else:
+                    ddelta_interval = np.array([ddelta_interval[0], ddelta])
+                    ddelta = np.mean(ddelta_interval)
             else:
-                ddelta_prev = ddelta
-                ddelta += np.mean(ddelta_interval) / 2
-                ddelta_interval = [ddelta_prev, ddelta]
+                if np.abs(goal_state_y) - np.abs(next_state.y) > 0:
+                    ddelta_interval = np.array([ddelta_interval[0], ddelta])
+                    ddelta = np.mean(ddelta_interval)
+                else:
+                    ddelta_interval = np.array([ddelta, ddelta_interval[1]])
+                    ddelta = np.mean(ddelta_interval)
 
             calc_goal_state_y = next_state.y
             next_state = VehicleState(
