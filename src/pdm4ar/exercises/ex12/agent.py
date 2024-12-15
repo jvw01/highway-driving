@@ -64,7 +64,7 @@ class StateMachine(enum.Enum):
     EXECUTE_LANE_CHANGE = 3
     HOLD_LANE = 4
     GOAL_STATE = 5
-    
+
 
 @dataclass(frozen=True)
 class Pdm4arAgentParams:
@@ -120,11 +120,8 @@ class Pdm4arAgent(Agent):
         self.dt = init_obs.dg_scenario.scenario.dt  # type: ignore
 
         # additional class variables
-        # TODO: default values for testing
-        self.n_vel = 1
-        self.steer_range = 0.3
-        self.n_steer = 3
-        self.n_steps = 5
+        self.dt_integral = 0.01  # time step for integral part of motion primitives
+        self.scaling_dt = 0.1 / self.dt_integral  # scaling factor for get_commands frequency (0.1s)
 
         self.lanelet_network = init_obs.dg_scenario.lanelet_network  # type: ignore
         self.half_lane_width = init_obs.goal.ref_lane.control_points[1].r  # type: ignore
@@ -137,8 +134,6 @@ class Pdm4arAgent(Agent):
         self.steer_controller = SteerController.from_vehicle_params(vehicle_param=self.vp)
         self.freq_counter = 0
         self.shortest_path = []
-
-
 
     def get_commands(self, sim_obs: SimObservations) -> VehicleCommands:
         """This method is called by the simulator every dt_commands seconds (0.1s by default).
@@ -155,41 +150,108 @@ class Pdm4arAgent(Agent):
             self.lane_orientation = sim_obs.players[
                 "Ego"
             ].state.psi  # type: ignore # assuming that lane orientation == initial orientation vehicle
+            # check whether goal lane is left or right of current lane
+            lanelet_id = self.lanelet_network.find_lanelet_by_position([np.array([current_state.x, current_state.y])])[
+                0
+            ][0]
+            lanelet = self.lanelet_network.find_lanelet_by_id(lanelet_id)
+            if lanelet.adj_left in self.goal_lane_ids:
+                self.goal_lane = "left"
+            else:
+                self.goal_lane = "right"
             self.state = StateMachine.ATTEMPT_LANE_CHANGE
 
         if self.state == StateMachine.ATTEMPT_LANE_CHANGE:
-            # get current lane by using the current position
-            # current_pos = np.array([sim_obs.players[self.name].state.x, sim_obs.players[self.name].state.y])
-            # try:
-            #     self.current_lanelet_id = self.lanelet_network.find_lanelet_by_position([current_pos])[0][0]
-            # except IndexError:
-            #     print("No lanelet found or out of bounds")
+            # need 4 motion primitives to change lanes - calculate the time horizon for one motion primitive
+            self.time_horizon = 0.9  # time horizon for one motion primitive; must be multiple of 0.1s, TODO: choose value depending on velocity; 0.5 for 2nd TC in config1
+            self.n_steps = int(self.time_horizon / self.dt_integral)
+            self.delta_steer = self.vp.ddelta_max * self.time_horizon
 
-            # calculate the motion primitives once
-            bd = BicycleDynamics(self.vg, self.vp)
-            mpg_params = MPGParam.from_vehicle_parameters(
-                dt=Decimal(self.dt), n_steps=self.n_steps, n_vel=self.n_vel, n_steer=self.n_steer, vp=self.vp
-            )
-            mpg = MotionPrimitivesGenerator(param=mpg_params, vehicle_dynamics=bd.successor, vehicle_param=self.vp)
-            end_states_traj, controls_traj = generate_primat(
-                x0=current_state, mpg=mpg, steer_range=self.steer_range, n_steer=self.n_steer
-            )
+            end_states = []
+            control_inputs = []
+            state = current_state
+
+            steps_lane_change = 4  # needs to be multiple of 4
+            for i in range(steps_lane_change):
+                if i == 0:
+                    case = 0
+                else:
+                    multiples = steps_lane_change / 4
+
+                    if i < multiples:
+                        case = 1
+                    elif i < 3 * multiples:
+                        case = 2
+                    else:
+                        case = 1
+
+                end_state, control_input = generate_primat(
+                    x0=state,
+                    steer_range=self.delta_steer,
+                    goal_lane=self.goal_lane,
+                    case=case,
+                    vp=self.vp,
+                    vg=self.vg,
+                    dt=self.dt_integral,
+                    n_steps=self.n_steps,
+                    scaling_dt=self.scaling_dt,
+                )
+
+                end_states.append(end_state)
+                control_inputs.append(control_input)
+
+                if i == steps_lane_change - 1:  # to avoid unncecessary computations
+                    break
+
+                dx = end_state[-1].x - current_state.x
+                dy = end_state[-1].y - current_state.y
+                dpsi = end_state[-1].psi - current_state.psi
+                delta = end_state[-1].delta - current_state.delta
+
+                delta_pos = np.array(
+                    [
+                        dx * np.cos(current_state.psi - self.lane_orientation)
+                        - dy * np.sin(current_state.psi - self.lane_orientation),
+                        dy * np.cos(current_state.psi - self.lane_orientation)
+                        + dx * np.sin(current_state.psi - self.lane_orientation),
+                    ]
+                )
+
+                state = VehicleState(
+                    x=current_state.x + delta_pos[0],
+                    y=current_state.y + delta_pos[1],
+                    psi=current_state.psi + dpsi,
+                    vx=current_state.vx,
+                    delta=current_state.delta + delta,
+                )
+
+            # n_steer = 1
+            # n_vel = 1
+            # bd = BicycleDynamics(self.vg, self.vp)
+            # mpg_params = MPGParam.from_vehicle_parameters(
+            #     dt=Decimal(self.dt), n_steps=self.n_steps, n_vel=n_vel, n_steer=n_steer, vp=self.vp
+            # )
+            # mpg = MotionPrimitivesGenerator(param=mpg_params, vehicle_dynamics=bd.successor, vehicle_param=self.vp)
+            # test = mpg.generate(x0=current_state)
+
+            # plot_end_states(end_states, self.lanelet_network.lanelet_polygons)
 
             # build graph
-            self.depth = 8  # TODO: default value - need to decide how deep we want our graph to be
+            self.depth = 9  # note: has to be greater than steps_lane_change! TODO: default value - need to decide how deep we want our graph to be
             start = time.time()
             weighted_graph = generate_graph(
-                current_state,
-                end_states_traj,
-                controls_traj,
-                self.depth,
-                self.lanelet_network,
-                self.half_lane_width,
-                self.lane_orientation,
-                self.goal_lane_ids,
+                current_state=current_state,
+                end_states_traj=end_states,
+                controls_traj=control_inputs,
+                depth=self.depth,
+                lanelet_network=self.lanelet_network,
+                goal_id=self.goal_lane_ids,
+                steps_lane_change=steps_lane_change,
             )
             end = time.time()
             print(f"Generating the graph took {end - start} seconds.")
+
+            plot_graph(weighted_graph.graph, self.lanelet_network.lanelet_polygons, [])
 
             # extract current state of dynamic obstacles to be able to propagate them for collision checking
             start_other_cars = time.time()
@@ -218,7 +280,7 @@ class Pdm4arAgent(Agent):
                 self.shortest_path = astar_solver.path(
                     start_node=weighted_graph.start_node, goal_node=weighted_graph.goal_node
                 )
-                # TODO: collision checking on shortest path with RTree for every time step
+                # collision checking on shortest path with RTree for every time step
                 if self.has_collision(
                     shortest_path=self.shortest_path, states_other_cars=states_dyn_obs, occupancy=current_occupancy
                 ):
@@ -228,40 +290,49 @@ class Pdm4arAgent(Agent):
                         (self.shortest_path[i], self.shortest_path[i + 1]) for i in range(0, len(self.shortest_path) - 1)
                     ]
                     weighted_graph.graph.remove_edges_from(edges_to_remove)
-                    weighted_graph.graph.remove_nodes_from(self.shortest_path[1:-1])  # exclude start and goal node
-                    self.shortest_path = []
+                    weighted_graph.graph.remove_nodes_from(shortest_path[1:-1])  # exclude start and goal node
+                    # Update adjacency list and weights
+                    for u, v in edges_to_remove:
+                        if u in weighted_graph.adj_list:
+                            weighted_graph.adj_list[u].discard(v)
+                    shortest_path = []
                     continue
                 else:
                     # a path without collision was found
                     print("Found path without collision.")
                     break
 
-            self.state = StateMachine.HOLD_LANE if not self.shortest_path else StateMachine.EXECUTE_LANE_CHANGE
             end_astar = time.time()
             print(f"A* took {end_astar - start_astar} seconds.")
 
-            self.plot_collisions(
-                states_dyn_obs, self.lanelet_network.lanelet_polygons, self.shortest_path, dyn_obs_current, current_occupancy
-            )
+            if self.shortest_path:
+                self.state = StateMachine.EXECUTE_LANE_CHANGE
+                self.num_steps_path = len(self.shortest_path) - 1  # exclude virtual goal node
+                self.path_node = 0
+
+            else:
+                self.state = StateMachine.HOLD_LANE
+
+            # self.plot_collisions(
+            #     states_dyn_obs, self.lanelet_network.lanelet_polygons, self.shortest_path, dyn_obs_current, current_occupancy
+            # )
 
             # start_plot = time.time()
             plot_graph(weighted_graph.graph, self.lanelet_network.lanelet_polygons, self.shortest_path)
+            # plot_graph(weighted_graph.graph, self.lanelet_network.lanelet_polygons, [])
             # end_plot = time.time()
             # print(f"Plotting the graph took {end_plot - start_plot} seconds.")
 
         if self.state == StateMachine.EXECUTE_LANE_CHANGE:  # case: A* found a path -> lane change
-            self.num_steps_path = len(self.shortest_path) - 1  # exclude virtual goal node
-            self.freq_counter += 1
-            self.path_node = 1
-            idx = self.freq_counter % (self.n_steps + 1) # TODO +1?? idx = 0 if self.freq_counter is multiple of 5 (i.e., 0, 5, 10)
-            
+            idx = int(self.freq_counter % np.floor(self.n_steps / self.scaling_dt))
+
             # remain in EXECUTE_LANE_CHANGE state as we are inbetween graph nodes
-            if idx != 0:  # TODO: correct? - still want to execute the nth step
+            if idx != 0:
                 self.freq_counter += 1
                 return VehicleCommands(
                     acc=self.shortest_path[self.path_node][3][idx].acc, ddelta=self.shortest_path[self.path_node][3][idx].ddelta,
                 )
-            
+
             # new graph node reached, switch to HOLD_LANE if we're at the goal node, else we stay until the goal node is reached
             else:
                 self.path_node += 1
@@ -290,14 +361,12 @@ class Pdm4arAgent(Agent):
             ddelta = self.spurhalteassistent(current_state, float(sim_obs.time))  # type: ignore
             self.freq_counter += 1
             return VehicleCommands(acc, ddelta)  # self.spurhalteassistent(current_state, float(sim_obs.time)))
-        
+
         if self.state == StateMachine.GOAL_STATE:
             acc = 0  # type: ignore
             ddelta = self.spurhalteassistent(current_state, float(sim_obs.time))  # type: ignore
             self.freq_counter += 1
             return VehicleCommands(acc, ddelta)  # self.spurhalteassistent(current_state, float(sim_obs.time)))
-
-
 
     def retrieve_goal_lane_ids(self) -> list:
         goal_lane_ids = [self.goal_id]
@@ -311,12 +380,11 @@ class Pdm4arAgent(Agent):
 
     def states_other_cars(self, dyn_obs_current: list) -> list:
         states_other_cars = []
-        time_horizon = self.n_steps * float(self.dt)  # time horizon for one motion primitive
         for i in range(1, self.depth):
             states_i = []
             for dyn_obs in dyn_obs_current:
                 vx = dyn_obs[2]
-                s = vx * time_horizon  # note: other cars do not change lanes
+                s = vx * self.time_horizon  # note: other cars do not change lanes
                 x_off = i * s * math.cos(self.lane_orientation)
                 y_off = i * s * math.sin(self.lane_orientation)
                 occupancy = dyn_obs[3]
@@ -332,18 +400,18 @@ class Pdm4arAgent(Agent):
         return rotate(translated_occupancy, angle=dpsi, origin=translated_occupancy.centroid, use_radians=True)
 
     def has_collision(self, shortest_path: list, states_other_cars: list, occupancy: Polygon) -> bool:
-        for i in range(len(shortest_path) - 1):  # exclude start and goal node
-            strtree = states_other_cars[i]
+        for i in range(1, len(shortest_path) - 1):  # exclude start and goal node
+            strtree = states_other_cars[i - 1]
             delta_pos = np.array(
                 [shortest_path[i][1].x - shortest_path[i - 1][1].x, shortest_path[i][1].y - shortest_path[i - 1][1].y]
             )
             dpsi = shortest_path[i][1].psi - shortest_path[i - 1][1].psi
             occupancy = self.calc_new_occupancy(current_occupancy=occupancy, delta_pos=delta_pos, dpsi=dpsi)
 
-            # check for collision with each obstacle TODO: correct?????
+            # check for collision with each obstacle
             candidate_indices = strtree.query(occupancy)
             for idx in candidate_indices:
-                obstacle = strtree[idx]
+                obstacle = strtree.geometries[idx]
                 if occupancy.intersects(obstacle):
                     return True
         return False
@@ -497,6 +565,31 @@ import time
 from matplotlib.collections import LineCollection
 
 
+def plot_end_states(end_states, lanelet_polygons):
+    plt.figure(figsize=(30, 25), dpi=250)
+    ax = plt.gca()
+
+    # Plot end states
+    for state_list in end_states:
+        x_coords = [state.x for state in state_list]
+        y_coords = [state.y for state in state_list]
+        plt.scatter(x_coords, y_coords, s=1, color="blue")  # Plot points and lines
+
+    # Plot static obstacles
+    for lanelet in lanelet_polygons:
+        x, y = lanelet.shapely_object.exterior.xy
+        plt.plot(x, y, linestyle="-", linewidth=0.8, color="darkorchid")
+
+    ax.set_aspect("equal", adjustable="box")
+
+    output_dir = "/tmp"
+    os.makedirs(output_dir, exist_ok=True)
+    filename = os.path.join(output_dir, "end_states.png")
+    plt.savefig(filename, bbox_inches="tight")  # Save the plot with tight bounding box
+    plt.close()
+    print(f"Graph saved to {filename}")
+
+
 def plot_graph(graph, lanelet_polygons, shortest_path):
     plt.figure(figsize=(30, 25), dpi=250)
     ax = plt.gca()
@@ -542,6 +635,9 @@ def plot_graph(graph, lanelet_polygons, shortest_path):
         plt.plot(x, y, linestyle="-", linewidth=0.8, color="darkorchid")
 
     ax.set_aspect("equal", adjustable="box")
+
+    # Add ticks every 10 steps on the x-axis
+    ax.set_xticks(np.arange(-120, max(node_coords[:, 0]) + 10, 10))
 
     output_dir = "/tmp"
     os.makedirs(output_dir, exist_ok=True)

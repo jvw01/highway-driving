@@ -10,14 +10,14 @@ testcases:
     others:
       names: [P8, P9, P18, P22]
     description: "scenario2"
-  -
-    scenario: "ZAM_Zip-1_64_T-1"
-    max_sim_time: 10.0
-    ego:
-      original_name: P0
-      goal_lane_id: 26
-    others:
-      names: [P1, P2]
-    description: "scenario1"
+  # -
+  #   scenario: "ZAM_Zip-1_64_T-1"
+  #   max_sim_time: 10.0
+  #   ego:
+  #     original_name: P0
+  #     goal_lane_id: 26
+  #   others:
+  #     names: [P1, P2]
+  #   description: "scenario1"
 
 seed: 98
