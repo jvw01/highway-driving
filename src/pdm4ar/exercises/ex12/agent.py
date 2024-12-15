@@ -55,7 +55,7 @@ from shapely.strtree import STRtree
 
 
 from .graph import WeightedGraph, generate_graph
-from .motion_primitves import generate_primat
+from .motion_primitves import calc_next_state, generate_primat
 from .astar import Astar
 
 class StateMachine(enum.Enum):
@@ -163,35 +163,20 @@ class Pdm4arAgent(Agent):
 
         if self.state == StateMachine.ATTEMPT_LANE_CHANGE:
             # need 4 motion primitives to change lanes - calculate the time horizon for one motion primitive
-            # self.time_horizon = 0.9  # time horizon for one motion primitive; must be multiple of 0.1s, TODO: choose value depending on velocity; 0.5 for 2nd TC in config1
-
-            # formula: time_horizon = lateral distance to goal lane / (v_x * tan(delta_max))
-            print("delta_max: ", self.vp.delta_max)
-            lat_dist_to_goal_lane = self.half_lane_width
-            if current_state.vx > 0 and self.vp.delta_max > 0:
-                self.time_horizon = lat_dist_to_goal_lane / (current_state.vx * math.tan(self.vp.delta_max))
-                self.time_horizon = max(0.2, min(self.time_horizon, 1.0))  # clamp between 0.2 and 1.0
-                self.time_horizon = round(self.time_horizon * 10) / 10.0 # round to neareast multiple of 0.1
-            else:
-                self.time_horizon = 0.5  # fallback
-
-
-
-            print(f"Time horizon: {self.time_horizon}")
-            print(f"Current state: {current_state}")
+            self.time_horizon, ddelta = self.calc_time_horizon_and_ddelta(current_state=current_state)
             self.n_steps = int(self.time_horizon / self.dt_integral)
-            self.delta_steer = self.vp.ddelta_max * self.time_horizon
+            self.delta_steer = ddelta * self.time_horizon
 
             end_states = []
             control_inputs = []
             state = current_state
 
-            steps_lane_change = 4  # needs to be multiple of 4
-            for i in range(steps_lane_change):
+            self.steps_lane_change = 4  # needs to be multiple of 4
+            for i in range(self.steps_lane_change):
                 if i == 0:
                     case = 0
                 else:
-                    multiples = steps_lane_change / 4
+                    multiples = self.steps_lane_change / 4
 
                     if i < multiples:
                         case = 1
@@ -215,7 +200,7 @@ class Pdm4arAgent(Agent):
                 end_states.append(end_state)
                 control_inputs.append(control_input)
 
-                if i == steps_lane_change - 1:  # to avoid unncecessary computations
+                if i == self.steps_lane_change - 1:  # to avoid unncecessary computations
                     break
 
                 dx = end_state[-1].x - current_state.x
@@ -240,19 +225,10 @@ class Pdm4arAgent(Agent):
                     delta=current_state.delta + delta,
                 )
 
-            # n_steer = 1
-            # n_vel = 1
-            # bd = BicycleDynamics(self.vg, self.vp)
-            # mpg_params = MPGParam.from_vehicle_parameters(
-            #     dt=Decimal(self.dt), n_steps=self.n_steps, n_vel=n_vel, n_steer=n_steer, vp=self.vp
-            # )
-            # mpg = MotionPrimitivesGenerator(param=mpg_params, vehicle_dynamics=bd.successor, vehicle_param=self.vp)
-            # test = mpg.generate(x0=current_state)
-
             # plot_end_states(end_states, self.lanelet_network.lanelet_polygons)
 
             # build graph
-            self.depth = 9  # note: has to be greater than steps_lane_change! TODO: default value - need to decide how deep we want our graph to be
+            self.depth = 8  # note: has to be greater than steps_lane_change! TODO: default value - need to decide how deep we want our graph to be
             start = time.time()
             weighted_graph = generate_graph(
                 current_state=current_state,
@@ -261,7 +237,7 @@ class Pdm4arAgent(Agent):
                 depth=self.depth,
                 lanelet_network=self.lanelet_network,
                 goal_id=self.goal_lane_ids,
-                steps_lane_change=steps_lane_change,
+                steps_lane_change=self.steps_lane_change,
             )
             end = time.time()
             print(f"Generating the graph took {end - start} seconds.")
@@ -290,7 +266,7 @@ class Pdm4arAgent(Agent):
 
             # find shortest path with A*
             start_astar = time.time()
-            for _ in range(weighted_graph.num_goal_nodes):
+            for k in range(weighted_graph.num_goal_nodes):
                 astar_solver = Astar(weighted_graph)
                 self.shortest_path = astar_solver.path(
                     start_node=weighted_graph.start_node, goal_node=weighted_graph.goal_node
@@ -302,15 +278,19 @@ class Pdm4arAgent(Agent):
                     print("Collision detected. Recomputing shortest path.")
                     # eliminate nodes and edges of the shortest path from the graph
                     edges_to_remove = [
-                        (self.shortest_path[i], self.shortest_path[i + 1]) for i in range(0, len(self.shortest_path) - 1)
+                        (self.shortest_path[k + i], self.shortest_path[k + i + 1])
+                        for i in range(0, len(self.shortest_path) - k - 1)
                     ]
                     weighted_graph.graph.remove_edges_from(edges_to_remove)
-                    weighted_graph.graph.remove_nodes_from(shortest_path[1:-1])  # exclude start and goal node
+                    weighted_graph.graph.remove_nodes_from(
+                        self.shortest_path[(k + 1) : -1]
+                    )  # exclude start and goal node
                     # Update adjacency list and weights
                     for u, v in edges_to_remove:
                         if u in weighted_graph.adj_list:
                             weighted_graph.adj_list[u].discard(v)
-                    shortest_path = []
+                    # plot_graph(weighted_graph.graph, self.lanelet_network.lanelet_polygons, [])
+                    self.shortest_path = []
                     continue
                 else:
                     # a path without collision was found
@@ -393,9 +373,91 @@ class Pdm4arAgent(Agent):
 
         return goal_lane_ids
 
+    def calc_time_horizon_and_ddelta(self, current_state: VehicleState) -> tuple[float, float]:
+        # heurisitic approach: in first motion primitive with delta_max, the car drives approximately a fifth of the lane width in y' direction
+        delta_y = self.half_lane_width * 0.4  # note: half_lane_width * 0.4 == 0.2 * lane_width == 1/5 of lane width
+        n_steps = 0
+        init_state_y = current_state.y
+        next_state = VehicleState(
+            x=current_state.x,
+            y=current_state.y,
+            psi=0,  # to make calculation easier - it does not matter for this calculation whether the road is at an angle
+            vx=current_state.vx,
+            delta=current_state.delta,
+        )
+
+        while (np.abs(next_state.y - init_state_y)) < delta_y:
+            n_steps += 1
+            next_state = calc_next_state(
+                next_state, VehicleCommands(acc=0, ddelta=self.vp.ddelta_max), self.dt_integral, self.vp, self.vg
+            )
+
+        goal_state_y = next_state.y
+        time_horizon = np.ceil(n_steps * self.dt_integral * 10) / 10  # round to nearest multiple of 0.1
+
+        # TODO: calculate ddelta with new time horizon
+        ddelta = self.vp.ddelta_max / 2  # start with ddelta_max / 2 as init guess for correct ddelta
+        ddelta_interval = [0, self.vp.ddelta_max]
+        n_steps = int(time_horizon / self.dt_integral)
+        init_state_y = current_state.y
+        next_state = VehicleState(
+            x=current_state.x,
+            y=current_state.y,
+            psi=0,  # to make calculation easier - it does not matter for this calculation whether the road is at an angle
+            vx=current_state.vx,
+            delta=current_state.delta,
+        )
+
+        calc_goal_state_y = current_state.y
+        while np.abs(goal_state_y - calc_goal_state_y) > 1e-2:
+            for _ in range(n_steps):
+                next_state = calc_next_state(
+                    next_state, VehicleCommands(acc=0, ddelta=ddelta), self.dt_integral, self.vp, self.vg
+                )
+
+            if np.abs(goal_state_y) - np.abs(next_state.y) > 0:
+                ddelta_prev = ddelta
+                ddelta -= np.mean(ddelta_interval) / 2
+                ddelta_interval = [ddelta, ddelta_prev]
+            else:
+                ddelta_prev = ddelta
+                ddelta += np.mean(ddelta_interval) / 2
+                ddelta_interval = [ddelta_prev, ddelta]
+
+            calc_goal_state_y = next_state.y
+            next_state = VehicleState(
+                x=current_state.x,
+                y=current_state.y,
+                psi=0,  # to make calculation easier - it does not matter for this calculation whether the road is at an angle
+                vx=current_state.vx,
+                delta=current_state.delta,
+            )
+
+            # next_state_pos = np.array([next_state.x, next_state.y])
+
+        return (time_horizon, ddelta)
+
+        # # formula: time_horizon = lateral distance to goal lane / (v_x * tan(delta_max))
+        # print("delta_max: ", self.vp.delta_max)
+        # lat_dist_to_goal_lane = self.half_lane_width
+        # if current_state.vx > 0 and self.vp.delta_max > 0:
+        #     self.time_horizon = lat_dist_to_goal_lane / (current_state.vx * math.tan(self.vp.delta_max))
+        #     self.time_horizon = max(0.2, min(self.time_horizon, 1.0))  # clamp between 0.2 and 1.0
+        #     self.time_horizon = round(self.time_horizon * 10) / 10.0 # round to neareast multiple of 0.1
+        # else:
+        #     self.time_horizon = 0.5  # fallback
+
+        # a = self.vg.wheelbase / (self.vg.lr * current_state.vx * math.tan(self.vp.delta_max))
+        # w = self.half_lane_width / 2
+        # self.time_horizon = (
+        #     w * math.cos(self.lane_orientation) / ((1 / a) - current_state.vx * math.sin(self.lane_orientation))
+        # )
+
     def states_other_cars(self, dyn_obs_current: list) -> list:
         states_other_cars = []
-        for i in range(1, self.depth):
+        for i in range(
+            1, self.depth + self.steps_lane_change
+        ):  # note: start at 1 because car does not collide in init state
             states_i = []
             for dyn_obs in dyn_obs_current:
                 vx = dyn_obs[2]
@@ -415,7 +477,7 @@ class Pdm4arAgent(Agent):
         return rotate(translated_occupancy, angle=dpsi, origin=translated_occupancy.centroid, use_radians=True)
 
     def has_collision(self, shortest_path: list, states_other_cars: list, occupancy: Polygon) -> bool:
-        for i in range(1, len(shortest_path) - 1):  # exclude start and goal node
+        for i in range(1, len(shortest_path) - 1):  # exclude start and goal node, only check
             strtree = states_other_cars[i - 1]
             delta_pos = np.array(
                 [shortest_path[i][1].x - shortest_path[i - 1][1].x, shortest_path[i][1].y - shortest_path[i - 1][1].y]

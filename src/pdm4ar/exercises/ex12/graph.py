@@ -82,9 +82,9 @@ def generate_graph(
     dx = end_states_traj[0][0].x - current_state.x
     dy = end_states_traj[0][0].y - current_state.y
     for i in range(depth):
-        level = i + 1  # start node == node at level 0 has already been added
+        level = i
         for k, state_list in enumerate(end_states_traj):
-            level += 1
+            level += 1  # start node == node at level 0 has already been added
             for n, state in enumerate(state_list):
                 next_state = VehicleState(
                     x=state.x + i * dx,
