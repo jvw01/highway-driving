@@ -163,7 +163,22 @@ class Pdm4arAgent(Agent):
 
         if self.state == StateMachine.ATTEMPT_LANE_CHANGE:
             # need 4 motion primitives to change lanes - calculate the time horizon for one motion primitive
-            self.time_horizon = 0.9  # time horizon for one motion primitive; must be multiple of 0.1s, TODO: choose value depending on velocity; 0.5 for 2nd TC in config1
+            # self.time_horizon = 0.9  # time horizon for one motion primitive; must be multiple of 0.1s, TODO: choose value depending on velocity; 0.5 for 2nd TC in config1
+
+            # formula: time_horizon = lateral distance to goal lane / (v_x * tan(delta_max))
+            print("delta_max: ", self.vp.delta_max)
+            lat_dist_to_goal_lane = self.half_lane_width
+            if current_state.vx > 0 and self.vp.delta_max > 0:
+                self.time_horizon = lat_dist_to_goal_lane / (current_state.vx * math.tan(self.vp.delta_max))
+                self.time_horizon = max(0.2, min(self.time_horizon, 1.0))  # clamp between 0.2 and 1.0
+                self.time_horizon = round(self.time_horizon * 10) / 10.0 # round to neareast multiple of 0.1
+            else:
+                self.time_horizon = 0.5  # fallback
+
+
+
+            print(f"Time horizon: {self.time_horizon}")
+            print(f"Current state: {current_state}")
             self.n_steps = int(self.time_horizon / self.dt_integral)
             self.delta_steer = self.vp.ddelta_max * self.time_horizon
 
