@@ -73,7 +73,7 @@ class Pdm4arAgent(Agent):
     goal: PlanningGoal
     vg: VehicleGeometry
     vp: VehicleParameters
-    dt: float  # Decimal
+    dt: Decimal
     lane_width: float
 
     # parameters for the velocity controler:
@@ -110,13 +110,11 @@ class Pdm4arAgent(Agent):
         self.goal = init_obs.goal  # type: ignore
         self.vg = init_obs.model_geometry  # type: ignore
         self.vp = init_obs.model_params  # type: ignore
-        self.dt = 0.01  # init_obs.dg_scenario.scenario.dt  # type: ignore
+        self.dt = init_obs.dg_scenario.scenario.dt  # type: ignore
 
         # additional class variables
-        # TODO: default values for testing
-        self.steer_range = 0.3
-        self.n_steps = int(0.5 / self.dt)  # take 0.5s steps for motion primitives; TODO: can be tuned
-        self.scaling_dt = 0.1 / self.dt  # scaling factor for dt=0.1s -> get_commands frequency
+        self.dt_integral = 0.01  # time step for integral part of motion primitives
+        self.scaling_dt = 0.1 / self.dt_integral  # scaling factor for get_commands frequency (0.1s)
 
         self.lanelet_network = init_obs.dg_scenario.lanelet_network  # type: ignore
         self.half_lane_width = init_obs.goal.ref_lane.control_points[1].r  # type: ignore
@@ -160,12 +158,15 @@ class Pdm4arAgent(Agent):
         if self.recompute:
             self.recompute = False
 
-            # need 4 motion primitives to change lanes
+            # need 4 motion primitives to change lanes - calculate the time horizon for one motion primitive
+            self.time_horizon = 0.5  # time horizon for one motion primitive; must be multiple of 0.1s, TODO: choose value depending on velocity
+            self.n_steps = int(self.time_horizon / self.dt_integral)
+            self.delta_steer = self.vp.ddelta_max * self.time_horizon
+
             end_states = []
             control_inputs = []
             state = current_state
 
-            # TODO: needs to be calculated based on lane change distance, speed, steering angle, etc.
             steps_lane_change = 4  # needs to be multiple of 4
             for i in range(steps_lane_change):
                 if i == 0:
@@ -182,12 +183,12 @@ class Pdm4arAgent(Agent):
 
                 end_state, control_input = generate_primat(
                     x0=state,
-                    steer_range=self.steer_range,
+                    steer_range=self.delta_steer,
                     goal_lane=self.goal_lane,
                     case=case,
                     vp=self.vp,
                     vg=self.vg,
-                    dt=self.dt,
+                    dt=self.dt_integral,
                     n_steps=self.n_steps,
                     scaling_dt=self.scaling_dt,
                 )
@@ -275,7 +276,7 @@ class Pdm4arAgent(Agent):
                 shortest_path = astar_solver.path(
                     start_node=weighted_graph.start_node, goal_node=weighted_graph.goal_node
                 )
-                # TODO: collision checking on shortest path with RTree for every time step
+                # collision checking on shortest path with RTree for every time step
                 if self.has_collision(
                     shortest_path=shortest_path, states_other_cars=states_dyn_obs, occupancy=current_occupancy
                 ):
@@ -329,7 +330,7 @@ class Pdm4arAgent(Agent):
 
         # extract correct vehicle commands
         if self.lane_change:
-            idx = int(self.freq_counter % (self.n_steps / self.scaling_dt))
+            idx = int(self.freq_counter % np.floor(self.n_steps / self.scaling_dt))
             if idx != 0:  # TODO: correct? - still want to execute the nth step
                 self.freq_counter += 1
                 return VehicleCommands(
@@ -385,12 +386,11 @@ class Pdm4arAgent(Agent):
 
     def states_other_cars(self, dyn_obs_current: list) -> list:
         states_other_cars = []
-        time_horizon = self.n_steps * self.dt  # time horizon for one motion primitive
         for i in range(1, self.depth):
             states_i = []
             for dyn_obs in dyn_obs_current:
                 vx = dyn_obs[2]
-                s = vx * time_horizon  # note: other cars do not change lanes
+                s = vx * self.time_horizon  # note: other cars do not change lanes
                 x_off = i * s * math.cos(self.lane_orientation)
                 y_off = i * s * math.sin(self.lane_orientation)
                 occupancy = dyn_obs[3]
@@ -414,7 +414,7 @@ class Pdm4arAgent(Agent):
             dpsi = shortest_path[i][1].psi - shortest_path[i - 1][1].psi
             occupancy = self.calc_new_occupancy(current_occupancy=occupancy, delta_pos=delta_pos, dpsi=dpsi)
 
-            # check for collision with each obstacle TODO: correct?????
+            # check for collision with each obstacle
             candidate_indices = strtree.query(occupancy)
             for idx in candidate_indices:
                 obstacle = strtree.geometries[idx]
@@ -447,9 +447,9 @@ class Pdm4arAgent(Agent):
             return (
                 -1 * dpsi - 0.1 * dist - 2 * current_state.delta  # hardcoded to tune the PD controller
             )  # -self.K_psi * dpsi - self.K_dist * dist - self.K_delta * current_state.delta
-        d_dist = (dist - self.last_dist) / self.dt
-        d_dpsi = (dpsi - self.last_dpsi) / self.dt
-        d_delta = (current_state.delta - self.last_delta) / self.dt
+        d_dist = (dist - self.last_dist) / float(self.dt)
+        d_dpsi = (dpsi - self.last_dpsi) / float(self.dt)
+        d_delta = (current_state.delta - self.last_delta) / float(self.dt)
         self.last_dist = dist
         self.last_dpsi = dpsi
         self.last_delta = current_state.delta
@@ -497,7 +497,7 @@ class Pdm4arAgent(Agent):
                 return (player_ahead.state.vx / self.T + 3) * (
                     self.last_e
                 )  # P-controler for first time step, here last_e is also the current error
-            de = (e - self.last_e) / self.dt
+            de = (e - self.last_e) / float(self.dt)
             self.last_e = e
             K_p = player_ahead.state.vx / self.T + 3
             acc = K_p * (self.T * de + e)

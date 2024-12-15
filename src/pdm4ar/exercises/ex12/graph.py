@@ -20,7 +20,7 @@ from pdm4ar.exercises_def.ex09 import goal
 import time
 
 
-class EdgeNotFound(Exception):  # TODO: necessary?
+class EdgeNotFound(Exception):
     pass
 
 
