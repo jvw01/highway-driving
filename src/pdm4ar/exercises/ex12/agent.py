@@ -136,6 +136,7 @@ class Pdm4arAgent(Agent):
         self.steer_controller = SteerController.from_vehicle_params(vehicle_param=self.vp)
         self.freq_counter = 0
         self.shortest_path = []
+        self.idx_previous_center_point = 0
 
     def get_commands(self, sim_obs: SimObservations) -> VehicleCommands:
         """This method is called by the simulator every dt_commands seconds (0.1s by default).
@@ -154,12 +155,13 @@ class Pdm4arAgent(Agent):
             )[0][0]
             current_lanelet = self.lanelet_network.find_lanelet_by_id(current_lanelet_id)
             center_vertices = current_lanelet.center_vertices
-            for i in range(len(center_vertices) - 1):
+            for i in range(self.idx_previous_center_point, len(center_vertices) - 1):
                 if center_vertices[i][0] > current_state.x:
                     self.lane_orientation = math.atan2(
                         center_vertices[i][1] - center_vertices[i - 1][1],
                         center_vertices[i][0] - center_vertices[i - 1][0],
                     )
+                    self.idx_previous_center_point = i - 1
                     break
             # self.lane_orientation = sim_obs.players[
             #     "Ego"
@@ -242,7 +244,7 @@ class Pdm4arAgent(Agent):
             # plot_end_states(end_states, self.lanelet_network.lanelet_polygons)
 
             # build graph
-            self.depth = 5  # note: has to be greater than steps_lane_change!
+            self.depth = 3  # note: has to be greater than steps_lane_change!
             start = time.time()
             weighted_graph = generate_graph(
                 current_state=current_state,
@@ -373,7 +375,7 @@ class Pdm4arAgent(Agent):
             if player_lanelet_id[0][0] in self.goal_lane_ids:  # stay on goal lane
                 self.state = StateMachine.GOAL_STATE
             else:  # stay on current lane for 0.5s and attempt lane change again
-                time_hold_lane = 5
+                time_hold_lane = 3
                 if self.freq_counter == time_hold_lane - 1:
                     self.state = StateMachine.ATTEMPT_LANE_CHANGE
                     self.freq_counter = 0  # reset freq_counter
@@ -401,8 +403,8 @@ class Pdm4arAgent(Agent):
         return goal_lane_ids
 
     def calc_time_horizon_and_ddelta(self, current_state: VehicleState) -> tuple[float, float]:
-        # heurisitic approach: in first motion primitive with delta_max, the car drives approximately a sixth of the lane width in y' direction
-        delta_y = self.half_lane_width * (1 / 3)
+        # heurisitic approach: in first motion primitive with delta_max, the car drives approximately a fifth/sixth/seventh/eighth of the lane width in y' direction
+        delta_y = self.half_lane_width * (1 / 3.5)
         n_steps = 0
         init_state_y = current_state.y
         next_state = VehicleState(
@@ -470,22 +472,6 @@ class Pdm4arAgent(Agent):
 
         return (time_horizon, ddelta)
 
-        # # formula: time_horizon = lateral distance to goal lane / (v_x * tan(delta_max))
-        # print("delta_max: ", self.vp.delta_max)
-        # lat_dist_to_goal_lane = self.half_lane_width
-        # if current_state.vx > 0 and self.vp.delta_max > 0:
-        #     self.time_horizon = lat_dist_to_goal_lane / (current_state.vx * math.tan(self.vp.delta_max))
-        #     self.time_horizon = max(0.2, min(self.time_horizon, 1.0))  # clamp between 0.2 and 1.0
-        #     self.time_horizon = round(self.time_horizon * 10) / 10.0 # round to neareast multiple of 0.1
-        # else:
-        #     self.time_horizon = 0.5  # fallback
-
-        # a = self.vg.wheelbase / (self.vg.lr * current_state.vx * math.tan(self.vp.delta_max))
-        # w = self.half_lane_width / 2
-        # self.time_horizon = (
-        #     w * math.cos(self.lane_orientation) / ((1 / a) - current_state.vx * math.sin(self.lane_orientation))
-        # )
-
     def states_other_cars(self, dyn_obs_current: list) -> list:
         states_other_cars = []
         for i in range(
@@ -535,7 +521,7 @@ class Pdm4arAgent(Agent):
         center_vertices = cur_lanelet.center_vertices
         lanelet_heading = math.atan2(
             center_vertices[-1][1] - center_vertices[0][1], center_vertices[-1][0] - center_vertices[0][0]
-        )  # should not be necessary, just to prevent numerical drift
+        )  # should not be necessary, just to prevent numerical drift TODO: not take current lanelet heading but interpolation???
         line_vec = center_vertices[-1] - center_vertices[0]
         normal_vec = np.array([-line_vec[1], line_vec[0]])
         normal_vec = normal_vec / np.linalg.norm(normal_vec)
@@ -628,12 +614,6 @@ class Pdm4arAgent(Agent):
                 return 0.0
 
         return acc
-
-    # def gib_ihm(self, current_state: VehicleState) -> float:
-    #     """ "Probably delete this function and integrate it into abstandhalteassistent for final version, thought it was funny"""
-    #     if current_state.vx >= 24.5:
-    #         return 0.0
-    #     return self.vp.acc_limits[1]
 
     def plot_collisions(self, rtree, lanelet_polygons, shortest_path, states_other_cars, occupancy):
         """
@@ -777,6 +757,27 @@ def plot_graph(graph, lanelet_polygons, shortest_path):
 
 
 ### BACKUP ###
+# def gib_ihm(self, current_state: VehicleState) -> float:
+#     """ "Probably delete this function and integrate it into abstandhalteassistent for final version, thought it was funny"""
+#     if current_state.vx >= 24.5:
+#         return 0.0
+#     return self.vp.acc_limits[1]
+
+# formula: time_horizon = lateral distance to goal lane / (v_x * tan(delta_max))
+# print("delta_max: ", self.vp.delta_max)
+# lat_dist_to_goal_lane = self.half_lane_width
+# if current_state.vx > 0 and self.vp.delta_max > 0:
+#     self.time_horizon = lat_dist_to_goal_lane / (current_state.vx * math.tan(self.vp.delta_max))
+#     self.time_horizon = max(0.2, min(self.time_horizon, 1.0))  # clamp between 0.2 and 1.0
+#     self.time_horizon = round(self.time_horizon * 10) / 10.0 # round to neareast multiple of 0.1
+# else:
+#     self.time_horizon = 0.5  # fallback
+
+# a = self.vg.wheelbase / (self.vg.lr * current_state.vx * math.tan(self.vp.delta_max))
+# w = self.half_lane_width / 2
+# self.time_horizon = (
+#     w * math.cos(self.lane_orientation) / ((1 / a) - current_state.vx * math.sin(self.lane_orientation))
+# )
 
 # function that takes the goal and creates a list of shapely lines that mark the goal lane
 # def define_goal_lines(self) -> List[LineString]:
