@@ -608,12 +608,12 @@ class Pdm4arAgent(Agent):
             if not self.init_abstand:
                 self.init_abstand = True
                 self.last_e = e
-                return (player_ahead.state.vx / self.T + 5) * (
+                return (player_ahead.state.vx / self.T + self.d_ref) * (
                     self.last_e
                 )  # P-controler for first time step, here last_e is also the current error
             de = (e - self.last_e) / float(self.dt)
             self.last_e = e
-            K_p = player_ahead.state.vx / self.T + 5  # TODO: 3 == self.d_ref?
+            K_p = player_ahead.state.vx / self.T + self.d_ref  # TODO: 3 == self.d_ref?
             acc = K_p * (self.T * de + e)
             # end_time = time.time()
             # print(f"Calculating acc took {end_time - start_time} seconds.")
