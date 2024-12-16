@@ -37,7 +37,7 @@ from dg_commons import logger, Timestamp, LinSpaceTuple
 from dg_commons.planning.trajectory import Trajectory
 from dg_commons.sim.models import vehicle_ligths
 from dg_commons.sim.models.vehicle_ligths import LightsCmd
-from networkx import DiGraph
+from networkx import DiGraph, shortest_path
 from shapely.geometry import Polygon
 from matplotlib.collections import LineCollection
 from shapely.geometry import LineString
@@ -149,9 +149,21 @@ class Pdm4arAgent(Agent):
         current_state = sim_obs.players["Ego"].state  # type: ignore
 
         if self.state == StateMachine.INITIALIZATION:
-            self.lane_orientation = sim_obs.players[
-                "Ego"
-            ].state.psi  # type: ignore # assuming that lane orientation == initial orientation vehicle
+            current_lanelet_id = self.lanelet_network.find_lanelet_by_position(
+                [np.array([current_state.x, current_state.y])]
+            )[0][0]
+            current_lanelet = self.lanelet_network.find_lanelet_by_id(current_lanelet_id)
+            center_vertices = current_lanelet.center_vertices
+            for i in range(len(center_vertices) - 1):
+                if center_vertices[i][0] > current_state.x:
+                    self.lane_orientation = math.atan2(
+                        center_vertices[i][1] - center_vertices[i - 1][1],
+                        center_vertices[i][0] - center_vertices[i - 1][0],
+                    )
+                    break
+            # self.lane_orientation = sim_obs.players[
+            #     "Ego"
+            # ].state.psi  # type: ignore # assuming that lane orientation == initial orientation vehicle
             # check whether goal lane is left or right of current lane
             lanelet_id = self.lanelet_network.find_lanelet_by_position([np.array([current_state.x, current_state.y])])[
                 0
@@ -309,7 +321,7 @@ class Pdm4arAgent(Agent):
             #     if weighted_graph.graph.out_degree(node) > 1:
             #         num_branches += 1
 
-            if self.count_removed_branches < self.depth:
+            if self.shortest_path and self.count_removed_branches < self.depth:
                 self.state = StateMachine.EXECUTE_LANE_CHANGE
                 self.num_steps_path = len(self.shortest_path) - 1  # exclude virtual goal node
                 self.path_node = 0
