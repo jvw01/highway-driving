@@ -230,7 +230,7 @@ class Pdm4arAgent(Agent):
             # plot_end_states(end_states, self.lanelet_network.lanelet_polygons)
 
             # build graph
-            self.depth = 8  # note: has to be greater than steps_lane_change! TODO: default value - need to decide how deep we want our graph to be
+            self.depth = 5  # note: has to be greater than steps_lane_change!
             start = time.time()
             weighted_graph = generate_graph(
                 current_state=current_state,
@@ -335,7 +335,7 @@ class Pdm4arAgent(Agent):
                 self.path_node += 1
                 if self.path_node == self.num_steps_path:  # goal node reached
                     self.state = StateMachine.HOLD_LANE
-                    acc = 0
+                    acc = self.abstandhalteassistent(current_state, sim_obs.players)  # type: ignore
                     ddelta = self.spurhalteassistent(current_state, float(sim_obs.time))  # type: ignore
                     self.freq_counter += 1
                     return VehicleCommands(acc, ddelta)  # self.spurhalteassistent(current_state, float(sim_obs.time)))
@@ -354,13 +354,13 @@ class Pdm4arAgent(Agent):
             if player_lanelet_id[0][0] == self.goal_id:
                 self.state = StateMachine.GOAL_STATE
 
-            acc = 0  # type: ignore
+            acc = self.abstandhalteassistent(current_state, sim_obs.players)  # type: ignore
             ddelta = self.spurhalteassistent(current_state, float(sim_obs.time))  # type: ignore
             self.freq_counter += 1
             return VehicleCommands(acc, ddelta)  # self.spurhalteassistent(current_state, float(sim_obs.time)))
 
         if self.state == StateMachine.GOAL_STATE:
-            acc = 0  # type: ignore
+            acc = self.abstandhalteassistent(current_state, sim_obs.players)  # type: ignore
             ddelta = self.spurhalteassistent(current_state, float(sim_obs.time))  # type: ignore
             self.freq_counter += 1
             return VehicleCommands(acc, ddelta)  # self.spurhalteassistent(current_state, float(sim_obs.time)))
@@ -550,22 +550,41 @@ class Pdm4arAgent(Agent):
         return ddelta
 
     def abstandhalteassistent(self, current_state: VehicleState, players: frozendict) -> float:
-        player_ahead = None
+        # start_time = time.time()
         for player in players:
             if player != self.name:
                 diff_angle = np.arctan2(
                     players[player].state.y - current_state.y, players[player].state.x - current_state.x
                 )
                 if abs(diff_angle - current_state.psi) < 0.04:
-                    print(player)
                     player_ahead = players[player]
+        # end_time = time.time()
+        # print(f"Finding player ahead took {end_time - start_time} seconds.")
 
-                    # player_lanelet_id = self.lanelet_network.find_lanelet_by_position([np.array([player.state.x, player.state.y])])
-                    # if player_lanelet_id[0][0]==self.lanelet_network.find_lanelet_by_position([np.array([current_state.x, current_state.y])])[0][0]:
-                    #     play
+        # start_time = time.time()
+        # player_ahead = None
+        # for player in players:
+        #     if player != self.name:
+        #         player_lanelet_id = self.lanelet_network.find_lanelet_by_position(
+        #             [np.array([players[player].state.x, players[player].state.y])]
+        #         )
+        #         if player_lanelet_id[0][0] in self.goal_lane_ids:
+        #             if players[player].state.x > current_state.x:  # assume that we also drive from left to right
+        #                 player_ahead = players[player]
+        # end_time = time.time()
+        # print(f"Finding player ahead took {end_time - start_time} seconds.")
+
         if player_ahead is None:
-            return self.gib_ihm(current_state)
+            # increase/decrease speed if car is too slow/fast (avoid velocity penalty) - else keep speed
+            if current_state.vx > 25:  #
+                return self.vp.acc_limits[0]
+            elif current_state.vx < 5:
+                return self.vp.acc_limits[1]
+            else:
+                return 0.0
+
         else:
+            # start_time = time.time()
             dist_to_player = math.sqrt(
                 (player_ahead.state.x - current_state.x) ** 2 + (player_ahead.state.y - current_state.y) ** 2
             )
@@ -580,16 +599,16 @@ class Pdm4arAgent(Agent):
             self.last_e = e
             K_p = player_ahead.state.vx / self.T + 3
             acc = K_p * (self.T * de + e)
+            # end_time = time.time()
+            # print(f"Calculating acc took {end_time - start_time} seconds.")
 
             return acc
 
-    def gib_ihm(self, current_state: VehicleState) -> float:
-        """ "Probably delete this function and integrate it into abstandhalteassistent for final version, thought it was funny"""
-        # TODO: fix this function
-        # if current_state.vx >= 24.5:
-        #     return 0.0
-        # return self.vp.acc_limits[1]
-        return 0.0
+    # def gib_ihm(self, current_state: VehicleState) -> float:
+    #     """ "Probably delete this function and integrate it into abstandhalteassistent for final version, thought it was funny"""
+    #     if current_state.vx >= 24.5:
+    #         return 0.0
+    #     return self.vp.acc_limits[1]
 
     def plot_collisions(self, rtree, lanelet_polygons, shortest_path, states_other_cars, occupancy):
         """
