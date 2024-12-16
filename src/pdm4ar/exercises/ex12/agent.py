@@ -268,6 +268,7 @@ class Pdm4arAgent(Agent):
 
             # find shortest path with A*
             start_astar = time.time()
+            self.count_removed_branches = 0  # note: assume one branch per lane change
             for k in range(weighted_graph.num_goal_nodes):
                 astar_solver = Astar(weighted_graph)
                 self.shortest_path = astar_solver.path(
@@ -292,6 +293,7 @@ class Pdm4arAgent(Agent):
                         if u in weighted_graph.adj_list:
                             weighted_graph.adj_list[u].discard(v)
                     # plot_graph(weighted_graph.graph, self.lanelet_network.lanelet_polygons, [])
+                    self.count_removed_branches += 1
                     self.shortest_path = []
                     continue
                 else:
@@ -302,7 +304,12 @@ class Pdm4arAgent(Agent):
             end_astar = time.time()
             print(f"A* took {end_astar - start_astar} seconds.")
 
-            if self.shortest_path:
+            # num_branches = 0
+            # for node in weighted_graph.graph.nodes:
+            #     if weighted_graph.graph.out_degree(node) > 1:
+            #         num_branches += 1
+
+            if self.count_removed_branches < self.depth:
                 self.state = StateMachine.EXECUTE_LANE_CHANGE
                 self.num_steps_path = len(self.shortest_path) - 1  # exclude virtual goal node
                 self.path_node = 0
@@ -321,7 +328,7 @@ class Pdm4arAgent(Agent):
             # print(f"Plotting the graph took {end_plot - start_plot} seconds.")
 
         if self.state == StateMachine.EXECUTE_LANE_CHANGE:  # case: A* found a path -> lane change
-            idx = int(self.freq_counter % np.floor(self.n_steps / self.scaling_dt))
+            idx = int(self.freq_counter % (self.n_steps / self.scaling_dt))
 
             # remain in EXECUTE_LANE_CHANGE state as we are inbetween graph nodes
             if idx != 0:
@@ -337,7 +344,7 @@ class Pdm4arAgent(Agent):
                     self.state = StateMachine.HOLD_LANE
                     acc = self.abstandhalteassistent(current_state, sim_obs.players)  # type: ignore
                     ddelta = self.spurhalteassistent(current_state, float(sim_obs.time))  # type: ignore
-                    self.freq_counter += 1
+                    self.freq_counter = 0  # done with lane change -> reset freq_counter
                     return VehicleCommands(acc, ddelta)  # self.spurhalteassistent(current_state, float(sim_obs.time)))
                 else:
                     self.freq_counter += 1
@@ -351,18 +358,24 @@ class Pdm4arAgent(Agent):
                 [np.array([current_state.x, current_state.y])]
             )
 
-            if player_lanelet_id[0][0] == self.goal_id:
+            if player_lanelet_id[0][0] in self.goal_lane_ids:  # stay on goal lane
                 self.state = StateMachine.GOAL_STATE
+            else:  # stay on current lane for 0.5s and attempt lane change again
+                time_hold_lane = 5
+                if self.freq_counter == time_hold_lane - 1:
+                    self.state = StateMachine.ATTEMPT_LANE_CHANGE
+                    self.freq_counter = 0  # reset freq_counter
+                else:
+                    self.state = StateMachine.HOLD_LANE
+                    self.freq_counter += 1
 
             acc = self.abstandhalteassistent(current_state, sim_obs.players)  # type: ignore
             ddelta = self.spurhalteassistent(current_state, float(sim_obs.time))  # type: ignore
-            self.freq_counter += 1
             return VehicleCommands(acc, ddelta)  # self.spurhalteassistent(current_state, float(sim_obs.time)))
 
         if self.state == StateMachine.GOAL_STATE:
             acc = self.abstandhalteassistent(current_state, sim_obs.players)  # type: ignore
             ddelta = self.spurhalteassistent(current_state, float(sim_obs.time))  # type: ignore
-            self.freq_counter += 1
             return VehicleCommands(acc, ddelta)  # self.spurhalteassistent(current_state, float(sim_obs.time)))
 
     def retrieve_goal_lane_ids(self) -> list:
@@ -550,6 +563,7 @@ class Pdm4arAgent(Agent):
         return ddelta
 
     def abstandhalteassistent(self, current_state: VehicleState, players: frozendict) -> float:
+        player_ahead = None
         # start_time = time.time()
         for player in players:
             if player != self.name:
@@ -562,7 +576,6 @@ class Pdm4arAgent(Agent):
         # print(f"Finding player ahead took {end_time - start_time} seconds.")
 
         # start_time = time.time()
-        # player_ahead = None
         # for player in players:
         #     if player != self.name:
         #         player_lanelet_id = self.lanelet_network.find_lanelet_by_position(
@@ -574,16 +587,7 @@ class Pdm4arAgent(Agent):
         # end_time = time.time()
         # print(f"Finding player ahead took {end_time - start_time} seconds.")
 
-        if player_ahead is None:
-            # increase/decrease speed if car is too slow/fast (avoid velocity penalty) - else keep speed
-            if current_state.vx > 25:  #
-                return self.vp.acc_limits[0]
-            elif current_state.vx < 5:
-                return self.vp.acc_limits[1]
-            else:
-                return 0.0
-
-        else:
+        if player_ahead:
             # start_time = time.time()
             dist_to_player = math.sqrt(
                 (player_ahead.state.x - current_state.x) ** 2 + (player_ahead.state.y - current_state.y) ** 2
@@ -597,12 +601,21 @@ class Pdm4arAgent(Agent):
                 )  # P-controler for first time step, here last_e is also the current error
             de = (e - self.last_e) / float(self.dt)
             self.last_e = e
-            K_p = player_ahead.state.vx / self.T + 3
+            K_p = player_ahead.state.vx / self.T + 3  # TODO: 3 == self.d_ref?
             acc = K_p * (self.T * de + e)
             # end_time = time.time()
             # print(f"Calculating acc took {end_time - start_time} seconds.")
 
-            return acc
+        else:
+            # increase/decrease speed if car is too slow/fast (avoid velocity penalty) - else keep speed
+            if current_state.vx > 25:  #
+                return self.vp.acc_limits[0]
+            elif current_state.vx < 5:
+                return self.vp.acc_limits[1]
+            else:
+                return 0.0
+
+        return acc
 
     # def gib_ihm(self, current_state: VehicleState) -> float:
     #     """ "Probably delete this function and integrate it into abstandhalteassistent for final version, thought it was funny"""
