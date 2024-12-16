@@ -86,7 +86,7 @@ class Pdm4arAgent(Agent):
     lane_width: float
 
     # parameters for the velocity controler:
-    d_ref: float = 3
+    d_ref: float = 2
     T: float = 8
     init_abstand: bool = False
     last_e: float
@@ -608,12 +608,12 @@ class Pdm4arAgent(Agent):
             if not self.init_abstand:
                 self.init_abstand = True
                 self.last_e = e
-                return (player_ahead.state.vx / self.T + 3) * (
+                return (player_ahead.state.vx / self.T + 5) * (
                     self.last_e
                 )  # P-controler for first time step, here last_e is also the current error
             de = (e - self.last_e) / float(self.dt)
             self.last_e = e
-            K_p = player_ahead.state.vx / self.T + 3  # TODO: 3 == self.d_ref?
+            K_p = player_ahead.state.vx / self.T + 5  # TODO: 3 == self.d_ref?
             acc = K_p * (self.T * de + e)
             # end_time = time.time()
             # print(f"Calculating acc took {end_time - start_time} seconds.")
