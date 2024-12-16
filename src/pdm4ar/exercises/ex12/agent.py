@@ -150,22 +150,9 @@ class Pdm4arAgent(Agent):
         current_state = sim_obs.players["Ego"].state  # type: ignore
 
         if self.state == StateMachine.INITIALIZATION:
-            current_lanelet_id = self.lanelet_network.find_lanelet_by_position(
-                [np.array([current_state.x, current_state.y])]
-            )[0][0]
-            current_lanelet = self.lanelet_network.find_lanelet_by_id(current_lanelet_id)
-            center_vertices = current_lanelet.center_vertices
-            for i in range(self.idx_previous_center_point, len(center_vertices) - 1):
-                if center_vertices[i][0] > current_state.x:
-                    self.lane_orientation = math.atan2(
-                        center_vertices[i][1] - center_vertices[i - 1][1],
-                        center_vertices[i][0] - center_vertices[i - 1][0],
-                    )
-                    self.idx_previous_center_point = i - 1
-                    break
-            # self.lane_orientation = sim_obs.players[
-            #     "Ego"
-            # ].state.psi  # type: ignore # assuming that lane orientation == initial orientation vehicle
+            self.lane_orientation = sim_obs.players[
+                "Ego"
+            ].state.psi  # type: ignore # assuming that lane orientation == initial orientation vehicle
             # check whether goal lane is left or right of current lane
             lanelet_id = self.lanelet_network.find_lanelet_by_position([np.array([current_state.x, current_state.y])])[
                 0
@@ -244,7 +231,7 @@ class Pdm4arAgent(Agent):
             # plot_end_states(end_states, self.lanelet_network.lanelet_polygons)
 
             # build graph
-            self.depth = 3  # note: has to be greater than steps_lane_change!
+            self.depth = 1  # note: has to be greater than steps_lane_change!
             start = time.time()
             weighted_graph = generate_graph(
                 current_state=current_state,
@@ -331,12 +318,17 @@ class Pdm4arAgent(Agent):
             else:
                 self.state = StateMachine.HOLD_LANE
 
-            # self.plot_collisions(
-            #     states_dyn_obs, self.lanelet_network.lanelet_polygons, self.shortest_path, dyn_obs_current, current_occupancy
-            # )
+            self.plot_collisions(
+                states_dyn_obs,
+                self.lanelet_network.lanelet_polygons,
+                self.shortest_path,
+                dyn_obs_current,
+                current_occupancy,
+                weighted_graph.graph,
+            )
 
             # start_plot = time.time()
-            plot_graph(weighted_graph.graph, self.lanelet_network.lanelet_polygons, self.shortest_path)
+            # plot_graph(weighted_graph.graph, self.lanelet_network.lanelet_polygons, self.shortest_path)
             # plot_graph(weighted_graph.graph, self.lanelet_network.lanelet_polygons, [])
             # end_plot = time.time()
             # print(f"Plotting the graph took {end_plot - start_plot} seconds.")
@@ -375,13 +367,14 @@ class Pdm4arAgent(Agent):
             if player_lanelet_id[0][0] in self.goal_lane_ids:  # stay on goal lane
                 self.state = StateMachine.GOAL_STATE
             else:  # stay on current lane for 0.5s and attempt lane change again
-                time_hold_lane = 3
-                if self.freq_counter == time_hold_lane - 1:
-                    self.state = StateMachine.ATTEMPT_LANE_CHANGE
-                    self.freq_counter = 0  # reset freq_counter
-                else:
-                    self.state = StateMachine.HOLD_LANE
-                    self.freq_counter += 1
+                # time_hold_lane = 3
+                # if self.freq_counter == time_hold_lane - 1:
+                #     self.state = StateMachine.ATTEMPT_LANE_CHANGE
+                #     self.freq_counter = 0  # reset freq_counter
+                # else:
+                #     self.state = StateMachine.HOLD_LANE
+                #     self.freq_counter += 1
+                self.state = StateMachine.ATTEMPT_LANE_CHANGE
 
             acc = self.abstandhalteassistent(current_state, sim_obs.players)  # type: ignore
             ddelta = self.spurhalteassistent(current_state, float(sim_obs.time))  # type: ignore
@@ -615,7 +608,7 @@ class Pdm4arAgent(Agent):
 
         return acc
 
-    def plot_collisions(self, rtree, lanelet_polygons, shortest_path, states_other_cars, occupancy):
+    def plot_collisions(self, rtree, lanelet_polygons, shortest_path, states_other_cars, occupancy, graph):
         """
         Plot the shapely.Polygon objects stored in the R-Tree.
         :param rtree_idx: R-Tree index containing the polygons.
@@ -624,20 +617,55 @@ class Pdm4arAgent(Agent):
         plt.figure(figsize=(30, 25), dpi=250)
         ax = plt.gca()
 
-        # init occupancy other cars
-        for car in states_other_cars:
-            x, y = car[3].exterior.xy
-            ax.plot(x, y, linestyle="-", linewidth=1, color="red")
+        # Collect all node coordinates
+        node_coords = []
+        edge_coords = []
+        for parent in graph.nodes:
+            if parent[0] == -1:  # Skip the virtual goal node
+                continue
+            parent_x, parent_y = parent[1].x, parent[1].y
+            node_coords.append((parent_x, parent_y))
 
-        # Iterate through the R-Tree and plot each polygon
-        cmap = plt.cm.get_cmap("tab20")
-        for k, time_instance in enumerate(rtree):
-            if k + 1 == len(shortest_path) - 1:  # exclude start and goal node
-                break
-            for i, polygon in enumerate(time_instance.geometries):
-                x, y = polygon.exterior.xy
-                color = cmap(i % cmap.N)
-                ax.plot(x, y, linestyle="-", linewidth=1, color=color)
+            for child in graph.successors(parent):
+                if child[0] == -1:  # Skip edges to the virtual goal node
+                    continue
+                child_x, child_y = child[1].x, child[1].y
+                edge_coords.append([(parent_x, parent_y), (child_x, child_y)])
+
+        # Plot all nodes at once
+        node_coords = np.array(node_coords)
+        plt.scatter(node_coords[:, 0], node_coords[:, 1], color="blue", s=1)
+
+        # Plot all edges at once using LineCollection
+        edge_collection = LineCollection(edge_coords, colors="blue", linewidths=0.3)
+        ax.add_collection(edge_collection)
+
+        # Plot the shortest path
+        if shortest_path:
+            path_coords = []
+            for node in shortest_path:
+                if node[0] == -1:  # Skip the virtual goal node
+                    continue
+                node_x, node_y = node[1].x, node[1].y
+                path_coords.append((node_x, node_y))
+
+            path_coords = np.array(path_coords)
+            plt.plot(path_coords[:, 0], path_coords[:, 1], color="red", linewidth=1.5, marker="o", markersize=2)
+
+            # init occupancy other cars
+            for car in states_other_cars:
+                x, y = car[3].exterior.xy
+                ax.plot(x, y, linestyle="-", linewidth=1, color="red")
+
+            # Iterate through the R-Tree and plot each polygon
+            cmap = plt.cm.get_cmap("tab20")
+            for k, time_instance in enumerate(rtree):
+                if k + 1 == len(shortest_path) - 1:  # exclude start and goal node
+                    break
+                for i, polygon in enumerate(time_instance.geometries):
+                    x, y = polygon.exterior.xy
+                    color = cmap(i % cmap.N)
+                    ax.plot(x, y, linestyle="-", linewidth=1, color=color)
 
         # init occupancy my car
         x, y = occupancy.exterior.xy
@@ -757,6 +785,24 @@ def plot_graph(graph, lanelet_polygons, shortest_path):
 
 
 ### BACKUP ###
+# current_lanelet_id = self.lanelet_network.find_lanelet_by_position(
+#     [np.array([current_state.x, current_state.y])]
+# )[0][0]
+# current_lanelet = self.lanelet_network.find_lanelet_by_id(current_lanelet_id)
+# center_vertices = current_lanelet.center_vertices
+# if center_vertices[0][0] > center_vertices[-1][0]:
+#     reverse = True
+#     center_vertices = center_vertices[::-1]
+
+# for i in range(self.idx_previous_center_point, len(center_vertices)):
+#     if center_vertices[i][0] > current_state.x:
+#         lane_orientation = math.atan2(
+#             center_vertices[i][1] - center_vertices[i - 1][1],
+#             center_vertices[i][0] - center_vertices[i - 1][0],
+#         )
+#         self.lane_orientation = lane_orientation if not reverse else lane_orientation + math.pi
+#         self.idx_previous_center_point = i - 1 if i > 0 else 0
+#         break
 # def gib_ihm(self, current_state: VehicleState) -> float:
 #     """ "Probably delete this function and integrate it into abstandhalteassistent for final version, thought it was funny"""
 #     if current_state.vx >= 24.5:
