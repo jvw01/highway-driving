@@ -242,7 +242,7 @@ class Pdm4arAgent(Agent):
 
             # build graph
             self.depth = 1  # note: has to be greater than steps_lane_change!
-            start = time.time()
+            # start = time.time()
             weighted_graph = generate_graph(
                 current_state=current_state,
                 end_states_traj=end_states,
@@ -252,8 +252,8 @@ class Pdm4arAgent(Agent):
                 goal_id=self.goal_lane_ids,
                 steps_lane_change=self.steps_lane_change,
             )
-            end = time.time()
-            print(f"Generating the graph took {end - start} seconds.")
+            # end = time.time()
+            # print(f"Generating the graph took {end - start} seconds.")
 
             # plot_graph(weighted_graph.graph, self.lanelet_network.lanelet_polygons, [])
 
@@ -278,7 +278,7 @@ class Pdm4arAgent(Agent):
             # print(f"Generating the dynamic obstacles took {end_other_cars - start_other_cars} seconds.")
 
             # find shortest path with A*
-            start_astar = time.time()
+            # start_astar = time.time()
             self.count_removed_branches = 0  # note: assume one branch per lane change
             for k in range(weighted_graph.num_goal_nodes):
                 astar_solver = Astar(weighted_graph)
@@ -312,8 +312,8 @@ class Pdm4arAgent(Agent):
                     print("Found path without collision.")
                     break
 
-            end_astar = time.time()
-            print(f"A* took {end_astar - start_astar} seconds.")
+            # end_astar = time.time()
+            # print(f"A* took {end_astar - start_astar} seconds.")
 
             # num_branches = 0
             # for node in weighted_graph.graph.nodes:
@@ -328,14 +328,14 @@ class Pdm4arAgent(Agent):
             else:
                 self.state = StateMachine.HOLD_LANE
 
-            self.plot_collisions(
-                states_dyn_obs,
-                self.lanelet_network.lanelet_polygons,
-                self.shortest_path,
-                dyn_obs_current,
-                current_occupancy,
-                weighted_graph.graph,
-            )
+            # self.plot_collisions(
+            #     states_dyn_obs,
+            #     self.lanelet_network.lanelet_polygons,
+            #     self.shortest_path,
+            #     dyn_obs_current,
+            #     current_occupancy,
+            #     weighted_graph.graph,
+            # )
 
             # start_plot = time.time()
             # plot_graph(weighted_graph.graph, self.lanelet_network.lanelet_polygons, self.shortest_path)
@@ -610,13 +610,14 @@ class Pdm4arAgent(Agent):
             # print(f"Calculating acc took {end_time - start_time} seconds.")
 
         else:
-            # increase/decrease speed if car is too slow/fast (avoid velocity penalty) - else keep speed
-            if current_state.vx > 25:  #
-                return self.vp.acc_limits[0]
-            elif current_state.vx < 5:
-                return self.vp.acc_limits[1]
-            else:
-                return 0.0
+            # # increase/decrease speed if car is too slow/fast (avoid velocity penalty) - else keep speed
+            # if current_state.vx > 25:  #
+            #     return self.vp.acc_limits[0]
+            # elif current_state.vx < 5:
+            #     return self.vp.acc_limits[1]
+            # else:
+            #     return 0.0
+            acc = 0.0
 
         return acc
 
