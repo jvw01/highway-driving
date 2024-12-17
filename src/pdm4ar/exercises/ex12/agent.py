@@ -565,28 +565,46 @@ class Pdm4arAgent(Agent):
         # print(ddelta)
         return ddelta
 
+    def retrieve_current_lane_ids(self, lane_id) -> list:
+        current_lane_ids = [lane_id]
+        lanelet = self.lanelet_network.find_lanelet_by_id(current_lane_ids[-1])
+        successor_id = lanelet.successor
+        while successor_id:
+            current_lane_ids.append(successor_id[0])
+            successor_id = self.lanelet_network.find_lanelet_by_id(successor_id[0]).successor
+
+        return current_lane_ids
+
     def abstandhalteassistent(self, current_state: VehicleState, players: frozendict) -> float:
         player_ahead = None
         # start_time = time.time()
-        for player in players:
-            if player != self.name:
-                diff_angle = np.arctan2(
-                    players[player].state.y - current_state.y, players[player].state.x - current_state.x
-                )
-                if abs(diff_angle - current_state.psi) < 0.04:
-                    player_ahead = players[player]
+        # for player in players:
+        #     if player != self.name:
+        #         diff_angle = np.arctan2(
+        #             players[player].state.y - current_state.y, players[player].state.x - current_state.x
+        #         )
+        #         if abs(diff_angle - current_state.psi) < 0.04:
+        #             player_ahead = players[player]
         # end_time = time.time()
         # print(f"Finding player ahead took {end_time - start_time} seconds.")
 
         # start_time = time.time()
-        # for player in players:
-        #     if player != self.name:
-        #         player_lanelet_id = self.lanelet_network.find_lanelet_by_position(
-        #             [np.array([players[player].state.x, players[player].state.y])]
-        #         )
-        #         if player_lanelet_id[0][0] in self.goal_lane_ids:
-        #             if players[player].state.x > current_state.x:  # assume that we also drive from left to right
-        #                 player_ahead = players[player]
+        goal_x = self.goal.goal_polygon.centroid.x
+        my_lanelet_id = self.lanelet_network.find_lanelet_by_position([np.array([current_state.x, current_state.y])])
+        if my_lanelet_id[0]:
+            current_lane_ids = self.retrieve_current_lane_ids(my_lanelet_id[0][0])
+            for player in players:
+                if player != self.name:
+                    player_lanelet_id = self.lanelet_network.find_lanelet_by_position(
+                        [np.array([players[player].state.x, players[player].state.y])]
+                    )
+                    if not player_lanelet_id[0]:
+                        continue
+                    if player_lanelet_id[0][0] in current_lane_ids:
+                        if np.abs(goal_x - players[player].state.x) < np.abs(
+                            goal_x - current_state.x
+                        ):  # note: has singularity at lane heading of 90 deg
+                            player_ahead = players[player]
         # end_time = time.time()
         # print(f"Finding player ahead took {end_time - start_time} seconds.")
 
@@ -605,21 +623,18 @@ class Pdm4arAgent(Agent):
             de = (e - self.last_e) / float(self.dt)
             self.last_e = e
             K_p = player_ahead.state.vx / self.T + self.d_ref  # TODO: 3 == self.d_ref?
-            acc = K_p * (self.T * de + e)
+            return K_p * (self.T * de + e)
             # end_time = time.time()
             # print(f"Calculating acc took {end_time - start_time} seconds.")
 
         else:
-            # # increase/decrease speed if car is too slow/fast (avoid velocity penalty) - else keep speed
-            # if current_state.vx > 25:  #
-            #     return self.vp.acc_limits[0]
-            # elif current_state.vx < 5:
-            #     return self.vp.acc_limits[1]
-            # else:
-            #     return 0.0
-            acc = 0.0
-
-        return acc
+            # increase/decrease speed if car is too slow/fast (avoid velocity penalty) - else keep speed
+            if current_state.vx > 25:  #
+                return self.vp.acc_limits[0]
+            elif current_state.vx < 5:
+                return self.vp.acc_limits[1]
+            else:
+                return 0.0
 
     def plot_collisions(self, rtree, lanelet_polygons, shortest_path, states_other_cars, occupancy, graph):
         """
@@ -653,6 +668,21 @@ class Pdm4arAgent(Agent):
         edge_collection = LineCollection(edge_coords, colors="blue", linewidths=0.3)
         ax.add_collection(edge_collection)
 
+        # init occupancy other cars
+        for car in states_other_cars:
+            x, y = car[3].exterior.xy
+            ax.plot(x, y, linestyle="-", linewidth=1, color="red")
+
+        # Iterate through the R-Tree and plot each polygon
+        cmap = plt.cm.get_cmap("tab20")
+        for k, time_instance in enumerate(rtree):
+            if k + 1 == len(shortest_path) - 1:  # exclude start and goal node
+                break
+            for i, polygon in enumerate(time_instance.geometries):
+                x, y = polygon.exterior.xy
+                color = cmap(i % cmap.N)
+                ax.plot(x, y, linestyle="-", linewidth=1, color=color)
+
         # Plot the shortest path
         if shortest_path:
             path_coords = []
@@ -664,21 +694,6 @@ class Pdm4arAgent(Agent):
 
             path_coords = np.array(path_coords)
             plt.plot(path_coords[:, 0], path_coords[:, 1], color="red", linewidth=1.5, marker="o", markersize=2)
-
-            # init occupancy other cars
-            for car in states_other_cars:
-                x, y = car[3].exterior.xy
-                ax.plot(x, y, linestyle="-", linewidth=1, color="red")
-
-            # Iterate through the R-Tree and plot each polygon
-            cmap = plt.cm.get_cmap("tab20")
-            for k, time_instance in enumerate(rtree):
-                if k + 1 == len(shortest_path) - 1:  # exclude start and goal node
-                    break
-                for i, polygon in enumerate(time_instance.geometries):
-                    x, y = polygon.exterior.xy
-                    color = cmap(i % cmap.N)
-                    ax.plot(x, y, linestyle="-", linewidth=1, color=color)
 
         # init occupancy my car
         x, y = occupancy.exterior.xy
