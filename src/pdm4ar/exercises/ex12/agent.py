@@ -262,22 +262,35 @@ class Pdm4arAgent(Agent):
             # start_other_cars = time.time()
             current_occupancy = sim_obs.players["Ego"].occupancy  # type: ignore
             dyn_obs_current = []
+            magic_speed = 6
             for player in sim_obs.players:
                 if player != "Ego":
-                    new_occupancy = self.calc_big_occupacy(
-                        sim_obs.players[player].occupancy,
-                        sim_obs.players[player].state.psi,
-                        sim_obs.players[player].state.x,
-                        sim_obs.players[player].state.y,
-                    )  # type: ignore
-                    dyn_obs_current.append(
-                        (
-                            sim_obs.players[player].state.x,  # type: ignore
-                            sim_obs.players[player].state.y,  # type: ignore
-                            sim_obs.players[player].state.vx,  # type: ignore
-                            new_occupancy,  # sim_obs.players[player].occupancy
+                    if sim_obs.players[player].state.vx > magic_speed:
+                        new_occupancy = self.calc_big_occupacy(
+                            sim_obs.players[player].occupancy,
+                            sim_obs.players[player].state.psi,
+                            sim_obs.players[player].state.x,
+                            sim_obs.players[player].state.y,
+                        )  # type: ignore
+
+                        dyn_obs_current.append(
+                            (
+                                sim_obs.players[player].state.x,  # type: ignore
+                                sim_obs.players[player].state.y,  # type: ignore
+                                sim_obs.players[player].state.vx,  # type: ignore
+                                new_occupancy,  # sim_obs.players[player].occupancy
+                            )
                         )
-                    )
+
+                    else:
+                        dyn_obs_current.append(
+                            (
+                                sim_obs.players[player].state.x,  # type: ignore
+                                sim_obs.players[player].state.y,  # type: ignore
+                                sim_obs.players[player].state.vx,  # type: ignore
+                                sim_obs.players[player].occupancy,  # type: ignore
+                            )
+                        )
 
             # create rtree for dynamic obstacles at each level of the graph (i.e. prepare efficient search for collision checking)
             states_dyn_obs = self.states_other_cars(dyn_obs_current)
@@ -540,7 +553,7 @@ class Pdm4arAgent(Agent):
         dist = np.dot(
             normal_vec, np.array([current_state.x, current_state.y]) - center_vertices[0]
         )  # should already have correct sign
-        print(dist)
+        # print(dist)
         dpsi = current_state.psi - lanelet_heading
         if not self.init_control:
             self.init_control = True
@@ -669,7 +682,7 @@ class Pdm4arAgent(Agent):
             # elif gamma > psi + 3 * math.pi / 4 and gamma <psi - math.pi 3/ 4:
 
             r_ce = [coords[0] - x, coords[1] - y]
-            m = 1.1
+            m = 1.5
             new_e = [c_coords[0] + m * r_ce[0], c_coords[1] + m * r_ce[1]]
             new_coords.append(new_e)
 
