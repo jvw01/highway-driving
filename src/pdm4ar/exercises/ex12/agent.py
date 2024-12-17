@@ -87,7 +87,8 @@ class Pdm4arAgent(Agent):
     lane_width: float
 
     # parameters for the velocity controler:
-    d_ref: float = 2
+    d_ref: float = 2  # 2 for first commit
+    d_ref_K = 0.5
     T: float = 8
     init_abstand: bool = False
     last_e: float
@@ -98,8 +99,8 @@ class Pdm4arAgent(Agent):
     K_delta: float = 2
     # okish results for P-only: k_psi=1, k_dist=0.1, k_delta=2
     K_d_psi: float = 0.5  # tried: 0.1, 0.5, already 0.1 helps to stabilize
-    K_d_dist: float = 0.1
-    K_d_delta: float = 0.1
+    K_d_dist: float = 0.1  # first submission: 0.1, tried: 1, 0.5, 0.1. 0.05 (scheint stäker zu schwinken mit höher)
+    K_d_delta: float = 0.1  # first push: 0.1, tried: 1, 0.5, 0.1
 
     pure_pursuit: PurePursuit
     steer_controller: SteerController
@@ -263,12 +264,18 @@ class Pdm4arAgent(Agent):
             dyn_obs_current = []
             for player in sim_obs.players:
                 if player != "Ego":
+                    new_occupancy = self.calc_big_occupacy(
+                        sim_obs.players[player].occupancy,
+                        sim_obs.players[player].state.psi,
+                        sim_obs.players[player].state.x,
+                        sim_obs.players[player].state.y,
+                    )  # type: ignore
                     dyn_obs_current.append(
                         (
                             sim_obs.players[player].state.x,  # type: ignore
                             sim_obs.players[player].state.y,  # type: ignore
                             sim_obs.players[player].state.vx,  # type: ignore
-                            sim_obs.players[player].occupancy,
+                            new_occupancy,  # sim_obs.players[player].occupancy
                         )
                     )
 
@@ -533,6 +540,7 @@ class Pdm4arAgent(Agent):
         dist = np.dot(
             normal_vec, np.array([current_state.x, current_state.y]) - center_vertices[0]
         )  # should already have correct sign
+        print(dist)
         dpsi = current_state.psi - lanelet_heading
         if not self.init_control:
             self.init_control = True
@@ -595,6 +603,11 @@ class Pdm4arAgent(Agent):
             dist_to_player = math.sqrt(
                 (player_ahead.state.x - current_state.x) ** 2 + (player_ahead.state.y - current_state.y) ** 2
             )
+
+            # d_ref= self.d_ref_K * player_ahead.state.vx
+            d_ref = self.d_ref_K * player_ahead.state.vx
+            size_ahead = player_ahead
+
             e = dist_to_player - self.d_ref
             if not self.init_abstand:
                 self.init_abstand = True
@@ -620,6 +633,28 @@ class Pdm4arAgent(Agent):
             acc = 0.0
 
         return acc
+
+    def calc_big_occupacy(self, occupancy: Polygon, psi: float, x: float, y: float) -> Polygon:
+        # enlarge occupancy polygon to avoid collisions
+        # x, y = occupancy.centroid.coords._coords[0]
+        coordinates = list(occupancy.exterior.coords)[:-1]
+        new_coords = []
+        c_coords = [x, y]
+        for coords in coordinates:
+            # gamma = math.atan2(coords[1] - y, coords[0] - x)
+            # if gamma < psi + math.pi / 4 and gamma > psi - math.pi / 4:
+            #     r_ce = [coords[0] - x, coords[1] - y]
+            #     new_e = [c_coords[0] + 1.05 * r_ce[0], c_coords[1] + 1.05 * r_ce[1]]
+            #     new_coords.append(new_e)
+            # elif gamma > psi + 3 * math.pi / 4 and gamma <psi - math.pi 3/ 4:
+
+            r_ce = [coords[0] - x, coords[1] - y]
+            new_e = [c_coords[0] + 1.05 * r_ce[0], c_coords[1] + 1.05 * r_ce[1]]
+            new_coords.append(new_e)
+
+        new_occupancy = Polygon(new_coords)
+
+        return new_occupancy
 
     def plot_collisions(self, rtree, lanelet_polygons, shortest_path, states_other_cars, occupancy, graph):
         """
