@@ -60,6 +60,7 @@ from .graph import WeightedGraph, generate_graph
 from .motion_primitves import calc_next_state, generate_primat
 from .astar import Astar
 
+
 class StateMachine(enum.Enum):
     INITIALIZATION = 1
     ATTEMPT_LANE_CHANGE = 2
@@ -174,19 +175,28 @@ class Pdm4arAgent(Agent):
             control_inputs = []
             state = current_state
 
-            self.steps_lane_change = 4  # needs to be multiple of 4
+            # only use 3 motion primitives to have abstandhalteassistent active again as soon as possible
+            self.steps_lane_change = 3
+            # self.steps_lane_change = 4  # needs to be multiple of 4
             for i in range(self.steps_lane_change):
+                # case motion primitives multiple of 4
+                # if i == 0:
+                #     case = 0
+                # else:
+                #     multiples = self.steps_lane_change / 4
+
+                #     if i < multiples:
+                #         case = 1
+                #     elif i < 3 * multiples:
+                #         case = 2
+                #     else:
+                #         case = 1
+
+                # case 3 motion primitives
                 if i == 0:
                     case = 0
-                else:
-                    multiples = self.steps_lane_change / 4
-
-                    if i < multiples:
-                        case = 1
-                    elif i < 3 * multiples:
-                        case = 2
-                    else:
-                        case = 1
+                elif i == 1:
+                    case = 2
 
                 end_state, control_input = generate_primat(
                     x0=state,
@@ -340,7 +350,8 @@ class Pdm4arAgent(Agent):
             if idx != 0:
                 self.freq_counter += 1
                 return VehicleCommands(
-                    acc=self.shortest_path[self.path_node][3][idx].acc, ddelta=self.shortest_path[self.path_node][3][idx].ddelta,
+                    acc=self.shortest_path[self.path_node][3][idx].acc,
+                    ddelta=self.shortest_path[self.path_node][3][idx].ddelta,
                 )
 
             # new graph node reached, switch to HOLD_LANE if we're at the goal node, else we stay until the goal node is reached
@@ -355,8 +366,9 @@ class Pdm4arAgent(Agent):
                 else:
                     self.freq_counter += 1
                     return VehicleCommands(
-                        acc=self.shortest_path[self.path_node][3][idx].acc, ddelta=self.shortest_path[self.path_node][3][idx].ddelta
-                    ) 
+                        acc=self.shortest_path[self.path_node][3][idx].acc,
+                        ddelta=self.shortest_path[self.path_node][3][idx].ddelta,
+                    )
 
         if self.state == StateMachine.HOLD_LANE:  # default case: continue on lane
             # check if car is on goal lane
@@ -397,7 +409,7 @@ class Pdm4arAgent(Agent):
 
     def calc_time_horizon_and_ddelta(self, current_state: VehicleState) -> tuple[float, float]:
         # heurisitic approach: in first motion primitive with delta_max, the car drives approximately a fifth/sixth/seventh/eighth of the lane width in y' direction
-        delta_y = self.half_lane_width * (1 / 3.5)
+        delta_y = self.half_lane_width * (1 / 3)
         n_steps = 0
         init_state_y = current_state.y
         next_state = VehicleState(
