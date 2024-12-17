@@ -624,9 +624,14 @@ class Pdm4arAgent(Agent):
 
             # d_ref= self.d_ref_K * player_ahead.state.vx
             d_ref = self.d_ref_K * player_ahead.state.vx
-            size_ahead = player_ahead
+            poly_edges = list(player_ahead.occupancy.exterior.coords)
+            l_half_ahead = math.sqrt(
+                (poly_edges[0][0] - player_ahead.state.x) ** 2 + (poly_edges[0][1] - player_ahead.state.y) ** 2
+            )
+            if d_ref < l_half_ahead + 1.5:
+                d_ref = l_half_ahead + 1.5
 
-            e = dist_to_player - self.d_ref
+            e = dist_to_player - d_ref
             if not self.init_abstand:
                 self.init_abstand = True
                 self.last_e = e
@@ -664,7 +669,8 @@ class Pdm4arAgent(Agent):
             # elif gamma > psi + 3 * math.pi / 4 and gamma <psi - math.pi 3/ 4:
 
             r_ce = [coords[0] - x, coords[1] - y]
-            new_e = [c_coords[0] + 1.05 * r_ce[0], c_coords[1] + 1.05 * r_ce[1]]
+            m = 1.1
+            new_e = [c_coords[0] + m * r_ce[0], c_coords[1] + m * r_ce[1]]
             new_coords.append(new_e)
 
         new_occupancy = Polygon(new_coords)
