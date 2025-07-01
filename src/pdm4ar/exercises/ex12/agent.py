@@ -6,7 +6,6 @@ from dg_commons.sim.agents import Agent
 from dg_commons.sim.models.vehicle import VehicleCommands
 from dg_commons.sim.models.vehicle_structures import VehicleGeometry
 from dg_commons.sim.models.vehicle_utils import VehicleParameters
-from dg_commons.sim.models.vehicle import VehicleState
 from decimal import Decimal
 from dataclasses import dataclass
 from decimal import Decimal
@@ -21,7 +20,7 @@ from pdm4ar.exercises.ex12.planning.collision_checker import CollisionChecker
 from pdm4ar.exercises.ex12.planning.motion_primitives_manager import MotionPrimitiveManager
 from pdm4ar.exercises.ex12.controllers.velocity_controller import VelocityController, VelocityControllerParams
 from pdm4ar.exercises.ex12.controllers.steering_controller import CustomSteerController, SteeringControllerParams
-from pdm4ar.exercises.ex12.state_machine.lane_change import LaneChangePlanner
+from pdm4ar.exercises.ex12.planning.lane_change import LaneChangePlanner
 
 class StateMachine(enum.Enum):
     INITIALIZATION = 1
@@ -29,11 +28,6 @@ class StateMachine(enum.Enum):
     EXECUTE_LANE_CHANGE = 3
     HOLD_LANE = 4
     GOAL_STATE = 5
-
-
-@dataclass(frozen=True)
-class Pdm4arAgentParams:
-    param1: float = 0.2
 
 
 class Pdm4arAgent(Agent):
@@ -57,31 +51,28 @@ class Pdm4arAgent(Agent):
     last_delta: float
     init_control: bool = False
 
-    def __init__(self):
-        # feel free to remove/modify  the following
-        self.params = Pdm4arAgentParams()
-        self.myplanner = ()
-
     def on_episode_init(self, init_obs: InitSimObservations):
         """
         This method is called by the simulator only at the beginning of each simulation.
-        Do not modify the signature of this fmethod.
+        Do not modify the signature of this method.
         """
+
         self.name = init_obs.my_name
         self.goal = init_obs.goal
         self.vg = init_obs.model_geometry
         self.vp = init_obs.model_params
         self.dt = init_obs.dg_scenario.scenario.dt
-        self.dt_integral = 0.01  # time step for integral part of motion primitives
-        self.scaling_dt = 0.1 / self.dt_integral  # scaling factor for get_commands frequency (0.1s)
         self.lanelet_network = init_obs.dg_scenario.lanelet_network
         self.half_lane_width = init_obs.goal.ref_lane.control_points[1].r
         self.goal_id = init_obs.dg_scenario.lanelet_network.find_lanelet_by_position(
             [init_obs.goal.ref_lane.control_points[1].q.p]
         )[0][0]
+
         self.state = StateMachine.INITIALIZATION
         self.goal_lane_ids = self.retrieve_goal_lane_ids()
         self.steer_controller = SteerController.from_vehicle_params(vehicle_param=self.vp)
+        self.dt_integral = 0.01  # time step for integral part of motion primitives
+        self.scaling_dt = 0.1 / self.dt_integral  # scaling factor for get_commands frequency (0.1s)
         self.freq_counter = 0
         self.shortest_path = []
         self.idx_previous_center_point = 0
@@ -129,14 +120,11 @@ class Pdm4arAgent(Agent):
         self.collision_checker = CollisionChecker()
 
     def get_commands(self, sim_obs: SimObservations) -> VehicleCommands:
-        """This method is called by the simulator every dt_commands seconds (0.1s by default).
-        Do not modify the signature of this method.
-
-        For instance, this is how you can get your current state from the observations:
-        my_current_state: VehicleState = sim_obs.players[self.name].state
-        :param sim_obs:
-        :return:
         """
+        This method is called by the simulator every dt_commands seconds (0.1s by default).
+        Do not modify the signature of this method.
+        """
+
         current_state = sim_obs.players["Ego"].state
 
         if self.state == StateMachine.INITIALIZATION:
@@ -183,7 +171,7 @@ class Pdm4arAgent(Agent):
             n_steps=self.n_steps,
         )
 
-        # build graph for djikstra algorithm
+        # build graph for djikstra's algorithm
         weighted_graph = generate_graph(
             current_state=current_state,
             end_states_traj=end_states,
@@ -194,36 +182,8 @@ class Pdm4arAgent(Agent):
             steps_lane_change=self.steps_lane_change,
         )
 
-        current_occupancy = sim_obs.players["Ego"].occupancy
-        dyn_obs_current = []
-        magic_speed = 6
-        for player in sim_obs.players:
-            if player != "Ego":
-                if sim_obs.players[player].state.vx > magic_speed:
-                    new_occupancy = self.collision_checker.calc_big_occupacy(
-                        sim_obs.players[player].occupancy,
-                        sim_obs.players[player].state.x,
-                        sim_obs.players[player].state.y,
-                    )
-
-                    dyn_obs_current.append(
-                        (
-                            sim_obs.players[player].state.x,
-                            sim_obs.players[player].state.y,
-                            sim_obs.players[player].state.vx,
-                            new_occupancy,
-                        )
-                    )
-
-                else:
-                    dyn_obs_current.append(
-                        (
-                            sim_obs.players[player].state.x,
-                            sim_obs.players[player].state.y,
-                            sim_obs.players[player].state.vx,
-                            sim_obs.players[player].occupancy,
-                        )
-                    )
+        # retrieve dynamic obstacles from simulation observations
+        dyn_obs_current = self.process_dyn_obs(sim_obs)
 
         # create rtree for dynamic obstacles at each level of the graph (i.e. prepare efficient search for collision checking)
         states_dyn_obs = self.collision_checker.states_other_cars(
@@ -234,36 +194,8 @@ class Pdm4arAgent(Agent):
             self.steps_lane_change,
         )
 
-        self.count_removed_branches = 0  # note: assume one branch per lane change
-        for k in range(weighted_graph.num_goal_nodes):
-            djikstra_solver = Dijkstra(weighted_graph)
-            self.shortest_path = djikstra_solver.path(
-                start_node=weighted_graph.start_node, goal_node=weighted_graph.goal_node
-            )
-            # collision checking on shortest path with RTree for every time step
-            if self.collision_checker.has_collision(
-                shortest_path=self.shortest_path, states_other_cars=states_dyn_obs, occupancy=current_occupancy
-            ):
-                print("Collision detected. Recomputing shortest path.")
-                # eliminate nodes and edges of the shortest path from the graph
-                edges_to_remove = [
-                    (self.shortest_path[k + i], self.shortest_path[k + i + 1])
-                    for i in range(0, len(self.shortest_path) - k - 1)
-                ]
-                weighted_graph.graph.remove_edges_from(edges_to_remove)
-                weighted_graph.graph.remove_nodes_from(self.shortest_path[(k + 1) : -1])  # exclude start and goal node
-                # Update adjacency list and weights
-                for u, v in edges_to_remove:
-                    if u in weighted_graph.adj_list:
-                        weighted_graph.adj_list[u].discard(v)
-                # plot_graph(weighted_graph.graph, self.lanelet_network.lanelet_polygons, [])
-                self.count_removed_branches += 1
-                self.shortest_path = []
-                continue
-            else:
-                # a path without collision was found
-                print("Found path without collision.")
-                break
+        # find shortest path using djikstra's algorithm
+        self.shortest_path_finder(sim_obs, weighted_graph, states_dyn_obs)
 
         if self.shortest_path and self.count_removed_branches < self.depth:
             self.state = StateMachine.EXECUTE_LANE_CHANGE
@@ -321,6 +253,74 @@ class Pdm4arAgent(Agent):
         acc = self.velocity_controller.abstandhalteassistent(current_state, sim_obs.players)
         ddelta = self.custom_steer_controller.spurhalteassistent(current_state, float(sim_obs.time))
         return VehicleCommands(acc, ddelta)
+
+    def shortest_path_finder(self, sim_obs, weighted_graph, states_dyn_obs):
+        current_occupancy = sim_obs.players["Ego"].occupancy
+        self.count_removed_branches = 0  # note: assume one branch per lane change
+        for k in range(weighted_graph.num_goal_nodes):
+            djikstra_solver = Dijkstra(weighted_graph)
+            self.shortest_path = djikstra_solver.path(
+                start_node=weighted_graph.start_node, goal_node=weighted_graph.goal_node
+            )
+
+            # collision checking on shortest path with rtree for every time step
+            if self.collision_checker.has_collision(
+                shortest_path=self.shortest_path, states_other_cars=states_dyn_obs, occupancy=current_occupancy
+            ):
+                print("Collision detected. Recomputing shortest path.")
+
+                # eliminate nodes and edges of the shortest path from the graph
+                edges_to_remove = [
+                    (self.shortest_path[k + i], self.shortest_path[k + i + 1])
+                    for i in range(0, len(self.shortest_path) - k - 1)
+                ]
+                weighted_graph.graph.remove_edges_from(edges_to_remove)
+                weighted_graph.graph.remove_nodes_from(self.shortest_path[(k + 1) : -1])  # exclude start and goal node
+
+                # update adjacency list and weights
+                for u, v in edges_to_remove:
+                    if u in weighted_graph.adj_list:
+                        weighted_graph.adj_list[u].discard(v)
+                self.count_removed_branches += 1
+                self.shortest_path = []
+                continue
+            else:
+                # a path without collision was found
+                print("Found path without collision.")
+                break
+
+    def process_dyn_obs(self, sim_obs) -> list:
+        dyn_obs_current = []
+        magic_speed = 6
+        for player in sim_obs.players:
+            if player != "Ego":
+                if sim_obs.players[player].state.vx > magic_speed:
+                    new_occupancy = self.collision_checker.calc_big_occupacy(
+                        sim_obs.players[player].occupancy,
+                        sim_obs.players[player].state.x,
+                        sim_obs.players[player].state.y,
+                    )
+
+                    dyn_obs_current.append(
+                        (
+                            sim_obs.players[player].state.x,
+                            sim_obs.players[player].state.y,
+                            sim_obs.players[player].state.vx,
+                            new_occupancy,
+                        )
+                    )
+
+                else:
+                    dyn_obs_current.append(
+                        (
+                            sim_obs.players[player].state.x,
+                            sim_obs.players[player].state.y,
+                            sim_obs.players[player].state.vx,
+                            sim_obs.players[player].occupancy,
+                        )
+                    )
+
+        return dyn_obs_current
 
     def retrieve_goal_lane_ids(self) -> list:
         goal_lane_ids = [self.goal_id]
