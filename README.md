@@ -1,15 +1,98 @@
-# PDM4AR-exercises
+# PDM4AR Highway Driving Exercise
 
-All the necessary instructions are on our website: [https://pdm4ar.github.io/exercises/](https://pdm4ar.github.io/exercises/).
+This repository contains the implementation for Exercise 12 of the Planning and Decision Making for Autonomous Robots (PDM4AR) course. The exercise focuses on autonomous highway driving scenarios with lane changing, collision avoidance, and goal-oriented navigation.
 
-### Highlights from the previous year
+## Overview
 
-|                                            *Using safety certificates*                                             |                                                  *Informed RRT**                                                   |                                       *Navigating through an asteroids' field*                                        |
-|:------------------------------------------------------------------------------------------------------------------:|:------------------------------------------------------------------------------------------------------------------:|:---------------------------------------------------------------------------------------------------------------------:|
-| <img src="https://user-images.githubusercontent.com/18750753/194148816-c19705da-9c0a-42a8-ad2f-137706b4b07b.png"/> | <img src="https://user-images.githubusercontent.com/79461707/156462386-3d27f2f3-669e-414f-9134-fbc28b89ed49.png"/> | <video src="https://user-images.githubusercontent.com/79461707/156427479-312f6e81-f16a-478d-add3-de01ce2eece4.mp4" /> |
+The highway driving exercise challenges students to implement a complete autonomous driving agent capable of:
+- **Lane keeping and following**: Maintaining position within lane boundaries
+- **Dynamic obstacle avoidance**: Responding to other vehicles and dynamic obstacles
+- **Strategic lane changing**: Making intelligent decisions for overtaking and goal achievement
+- **Velocity control**: Adaptive speed management based on traffic conditions
+- **Goal-oriented navigation**: Efficient path planning to reach designated targets
 
-But remember that the first time it is never easy...
+## Getting Started
 
-|                                                                                       *Out of control*                                                                                        |                                               *Some seeds are tougher*                                                |                                                 *The Drunkard's Walk*                                                 |
-|:---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------:|:---------------------------------------------------------------------------------------------------------------------:|:---------------------------------------------------------------------------------------------------------------------:|
-| ![PDM4AR-final21-staticenvironment0-PDM4AR-EpisodeVisualisation-figure1-Animation (1)](https://user-images.githubusercontent.com/18750753/194147922-20cdc861-830b-42e0-9282-9d0955c5cf77.gif) | <video src="https://user-images.githubusercontent.com/18750753/194151123-2c98d01f-8e18-46e4-92b0-31b94f6d0842.mp4" /> | <video src="https://user-images.githubusercontent.com/18750753/194152429-9d2d454f-a878-48fd-be8f-70cadf68d2bf.mp4" /> |
+### Prerequisites
+
+- Docker (for devcontainer support)
+
+### Installation
+
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/jvw01/highway-driving.git
+   cd highway-driving
+   ```
+
+2. Set up the development environment using the provided devcontainer or install dependencies manually.
+
+### Running the Exercise
+
+Execute Exercise 12 using the following command:
+
+```bash
+python src/pdm4ar/main.py --exercise 12
+```
+
+## Project Structure
+
+```
+src/pdm4ar/
+├── exercises/
+│   └── ex12/
+│       ├── agent.py              # Main agent implementation
+│       ├── motion_primitives.py  # Vehicle motion models
+│       ├── graph.py              # Path planning graph structures
+│       └── dijkstra.py           # Dijkstra search algorithm
+├── exercises_def/
+│   └── ex12/
+│       ├── ex12.py               # Exercise configuration
+│       ├── sim_context.py        # Simulation setup
+│       └── perf_metrics.py       # Performance evaluation
+└── main.py                       # Entry point
+```
+
+## Performance Evaluation
+
+The exercise evaluates agent performance across multiple scenarios with increasing difficulty:
+
+### Scenario 1: Basic Highway Navigation
+
+| Scenario 1.1 | Scenario 1.2 |
+|:----------:|:----------:|
+| <video src="videos/Evaluation-Final24-1-scenario1-EpisodeVisualisation-figure1-Animation.mp4" controls width="400"></video> | <video src="videos/Evaluation-Final24-2-scenario1-EpisodeVisualisation-figure1-Animation.mp4" controls width="400"></video> |
+
+*Description: Basic lane following and lane changing in light traffic conditions.*
+
+### Scenario 2: Complex Traffic Situations
+
+| Scenario 2.1 | Scenario 2.2 |
+|:----------:|:----------:|
+| <video src="videos/Evaluation-Final24-1-scenario2-EpisodeVisualisation-figure1-Animation.mp4" controls width="400"></video> | <video src="videos/Evaluation-Final24-2-scenario2-EpisodeVisualisation-figure1-Animation.mp4" controls width="400"></video> |
+
+*Description: Advanced scenarios with dense traffic, requiring strategic lane changes.*
+
+### Scenario 3: Emergency Situations
+
+<div align="center">
+<video width="192" height="192"
+src="videos/Evaluation-Final24-3-scenario1-EpisodeVisualisation-figure1-Animation.mp4" controls width="400">
+</video>
+</div>
+
+*Description: Difficult scenario with traffic jam.*
+
+## Evaluation Metrics
+
+The agent performance is assessed using the following criteria:
+
+- **Safety**: Collision avoidance and safe following distances
+- **Efficiency**: Time to goal and smooth trajectory execution  
+- **Comfort**: Minimal jerk and acceleration variations
+- **Goal Achievement**: Successful navigation to target destinations
+- **Traffic Compliance**: Adherence to traffic rules and lane discipline
+
+## References
+
+- [PDM4AR Course Materials](https://pdm4ar.github.io/exercises/12-highway_driving.html)

@@ -278,7 +278,8 @@
             ],
             "console": "integratedTerminal",
             "justMyCode": true
-        }{
+        },
+        {
             "name": "Exercise12 - Run",
             "type": "debugpy",
             "request": "launch",
