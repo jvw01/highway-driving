@@ -5,23 +5,25 @@ import numpy as np
 import math
 
 class CollisionChecker:
-    def __init__(self, lane_orientation: float, time_horizon: float, depth: int, steps_lane_change: int):
-        self.lane_orientation = lane_orientation
-        self.time_horizon = time_horizon
-        self.depth = depth
-        self.steps_lane_change = steps_lane_change
-    
-    def states_other_cars(self, dyn_obs_current: list) -> list:
+
+    def states_other_cars(
+        self,
+        dyn_obs_current: list,
+        lane_orientation: float,
+        time_horizon: float,
+        depth: int,
+        steps_lane_change: int,
+    ) -> list:
         states_other_cars = []
         for i in range(
-            1, self.depth + self.steps_lane_change
+            1, depth + steps_lane_change
         ):  # note: start at 1 because car does not collide in init state
             states_i = []
             for dyn_obs in dyn_obs_current:
                 vx = dyn_obs[2]
-                s = vx * self.time_horizon  # note: other cars do not change lanes
-                x_off = i * s * math.cos(self.lane_orientation)
-                y_off = i * s * math.sin(self.lane_orientation)
+                s = vx * time_horizon  # note: other cars do not change lanes
+                x_off = i * s * math.cos(lane_orientation)
+                y_off = i * s * math.sin(lane_orientation)
                 occupancy = dyn_obs[3]
                 new_occupancy = translate(occupancy, xoff=x_off, yoff=y_off)
                 states_i.append(new_occupancy)
@@ -66,4 +68,3 @@ class CollisionChecker:
         new_occupancy = Polygon(new_coords)
 
         return new_occupancy
-    

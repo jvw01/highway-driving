@@ -75,11 +75,9 @@ The exercise evaluates agent performance across multiple scenarios with increasi
 
 ### Scenario 3: Emergency Situations
 
-<div align="center">
-<video width="192" height="192"
-src="videos/Evaluation-Final24-3-scenario1-EpisodeVisualisation-figure1-Animation.mp4" controls width="400">
-</video>
-</div>
+| Scenario 3.1 |
+|:----------:|
+| <video src="videos/Evaluation-Final24-3-scenario1-EpisodeVisualisation-figure1-Animation.mp4" controls width="400"></video> |
 
 *Description: Difficult scenario with traffic jam.*
 

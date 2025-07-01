@@ -15,10 +15,10 @@ from dg_commons.controllers.pure_pursuit import PurePursuit
 import numpy as np
 import enum
 
-from pdm4ar.exercises.ex12.planning.motion_primitves import generate_primat
 from pdm4ar.exercises.ex12.planning.graph import generate_graph
 from pdm4ar.exercises.ex12.planning.dijkstra import Dijkstra
 from pdm4ar.exercises.ex12.planning.collision_checker import CollisionChecker
+from pdm4ar.exercises.ex12.planning.motion_primitives_manager import MotionPrimitiveManager
 from pdm4ar.exercises.ex12.controllers.velocity_controller import VelocityController, VelocityControllerParams
 from pdm4ar.exercises.ex12.controllers.steering_controller import CustomSteerController, SteeringControllerParams
 from pdm4ar.exercises.ex12.state_machine.lane_change import LaneChangePlanner
@@ -117,6 +117,17 @@ class Pdm4arAgent(Agent):
             half_lane_width=self.half_lane_width,
         )
 
+        # initialize motion primitve manager
+        self.motion_primitive_manager = MotionPrimitiveManager(
+            vp=self.vp,
+            vg=self.vg,
+            dt_integral=self.dt_integral,
+            scaling_dt=self.scaling_dt,
+        )
+
+        # initialize collision checker
+        self.collision_checker = CollisionChecker()
+
     def get_commands(self, sim_obs: SimObservations) -> VehicleCommands:
         """This method is called by the simulator every dt_commands seconds (0.1s by default).
         Do not modify the signature of this method.
@@ -129,215 +140,187 @@ class Pdm4arAgent(Agent):
         current_state = sim_obs.players["Ego"].state
 
         if self.state == StateMachine.INITIALIZATION:
-            self.lane_orientation = sim_obs.players[
-                "Ego"
-            ].state.psi  # assuming that lane orientation == initial orientation vehicle
-            # check whether goal lane is left or right of current lane
-            lanelet_id = self.lanelet_network.find_lanelet_by_position([np.array([current_state.x, current_state.y])])[
-                0
-            ][0]
-            lanelet = self.lanelet_network.find_lanelet_by_id(lanelet_id)
-            if lanelet.adj_left in self.goal_lane_ids:
-                self.goal_lane = "left"
-            else:
-                self.goal_lane = "right"
-            self.state = StateMachine.ATTEMPT_LANE_CHANGE
+            self.handle_init_state(current_state, sim_obs)
 
         if self.state == StateMachine.ATTEMPT_LANE_CHANGE:
-            # need 4 motion primitives to change lanes - calculate the time horizon for one motion primitive
-            self.time_horizon, ddelta = self.lane_change_planner.calc_time_horizon_and_ddelta(current_state=current_state)
-            self.n_steps = int(self.time_horizon / self.dt_integral)
-            self.delta_steer = ddelta * self.time_horizon
+            self.handle_attempt_lane_change_state(current_state, sim_obs)
 
-            # initialize collision checker
-            self.collision_checker = CollisionChecker(
-                lane_orientation=self.lane_orientation,
-                time_horizon=self.time_horizon,
-                depth=self.depth,
-                steps_lane_change=self.steps_lane_change,
-            )
+        if self.state == StateMachine.EXECUTE_LANE_CHANGE:
+            return self.handle_execute_lane_change_state(current_state, sim_obs)
 
-            end_states = []
-            control_inputs = []
-            state = current_state
+        if self.state == StateMachine.HOLD_LANE:
+            return self.handle_hold_lane_state(current_state, sim_obs)
 
-            for i in range(self.steps_lane_change):
-                if i == 0:
-                    case = 0
-                elif i == 1:
-                    case = 2
+        if self.state == StateMachine.GOAL_STATE:
+            return self.handle_goal_state(current_state, sim_obs)
 
-                end_state, control_input = generate_primat(
-                    x0=state,
-                    steer_range=self.delta_steer,
-                    goal_lane=self.goal_lane,
-                    case=case,
-                    vp=self.vp,
-                    vg=self.vg,
-                    dt=self.dt_integral,
-                    n_steps=self.n_steps,
-                    scaling_dt=self.scaling_dt,
-                )
+    def handle_init_state(self, current_state, sim_obs):
+        self.lane_orientation = sim_obs.players[
+            "Ego"
+        ].state.psi  # assuming that lane orientation == initial orientation vehicle
+        # check whether goal lane is left or right of current lane
+        lanelet_id = self.lanelet_network.find_lanelet_by_position([np.array([current_state.x, current_state.y])])[0][0]
+        lanelet = self.lanelet_network.find_lanelet_by_id(lanelet_id)
+        if lanelet.adj_left in self.goal_lane_ids:
+            self.goal_lane = "left"
+        else:
+            self.goal_lane = "right"
+        self.state = StateMachine.ATTEMPT_LANE_CHANGE
 
-                end_states.append(end_state)
-                control_inputs.append(control_input)
+    def handle_attempt_lane_change_state(self, current_state, sim_obs) -> VehicleCommands:
+        # need 4 motion primitives to change lanes - calculate the time horizon for one motion primitive
+        self.time_horizon, ddelta = self.lane_change_planner.calc_time_horizon_and_ddelta(current_state=current_state)
+        self.n_steps = int(self.time_horizon / self.dt_integral)
+        self.delta_steer = ddelta * self.time_horizon
 
-                if i == self.steps_lane_change - 1:
-                    break
+        # calculate control inputs and end states for motion primitives
+        end_states, control_inputs = self.motion_primitive_manager.generate_control_inputs(
+            current_state=current_state,
+            goal_lane=self.goal_lane,
+            lane_orientation=self.lane_orientation,
+            delta_steer=self.delta_steer,
+            steps_lane_change=self.steps_lane_change,
+            n_steps=self.n_steps,
+        )
 
-                dx = end_state[-1].x - current_state.x
-                dy = end_state[-1].y - current_state.y
-                dpsi = end_state[-1].psi - current_state.psi
-                delta = end_state[-1].delta - current_state.delta
+        # build graph for djikstra algorithm
+        weighted_graph = generate_graph(
+            current_state=current_state,
+            end_states_traj=end_states,
+            controls_traj=control_inputs,
+            depth=self.depth,
+            lanelet_network=self.lanelet_network,
+            goal_id=self.goal_lane_ids,
+            steps_lane_change=self.steps_lane_change,
+        )
 
-                delta_pos = np.array(
-                    [
-                        dx * np.cos(current_state.psi - self.lane_orientation)
-                        - dy * np.sin(current_state.psi - self.lane_orientation),
-                        dy * np.cos(current_state.psi - self.lane_orientation)
-                        + dx * np.sin(current_state.psi - self.lane_orientation),
-                    ]
-                )
+        current_occupancy = sim_obs.players["Ego"].occupancy
+        dyn_obs_current = []
+        magic_speed = 6
+        for player in sim_obs.players:
+            if player != "Ego":
+                if sim_obs.players[player].state.vx > magic_speed:
+                    new_occupancy = self.collision_checker.calc_big_occupacy(
+                        sim_obs.players[player].occupancy,
+                        sim_obs.players[player].state.x,
+                        sim_obs.players[player].state.y,
+                    )
 
-                state = VehicleState(
-                    x=current_state.x + delta_pos[0],
-                    y=current_state.y + delta_pos[1],
-                    psi=current_state.psi + dpsi,
-                    vx=current_state.vx,
-                    delta=current_state.delta + delta,
-                )
-
-            # build graph
-            weighted_graph = generate_graph(
-                current_state=current_state,
-                end_states_traj=end_states,
-                controls_traj=control_inputs,
-                depth=self.depth,
-                lanelet_network=self.lanelet_network,
-                goal_id=self.goal_lane_ids,
-                steps_lane_change=self.steps_lane_change,
-            )
-
-            current_occupancy = sim_obs.players["Ego"].occupancy
-            dyn_obs_current = []
-            magic_speed = 6
-            for player in sim_obs.players:
-                if player != "Ego":
-                    if sim_obs.players[player].state.vx > magic_speed:
-                        new_occupancy = self.collision_checker.calc_big_occupacy(
-                            sim_obs.players[player].occupancy,
+                    dyn_obs_current.append(
+                        (
                             sim_obs.players[player].state.x,
                             sim_obs.players[player].state.y,
+                            sim_obs.players[player].state.vx,
+                            new_occupancy,
                         )
+                    )
 
-                        dyn_obs_current.append(
-                            (
-                                sim_obs.players[player].state.x,
-                                sim_obs.players[player].state.y,
-                                sim_obs.players[player].state.vx,
-                                new_occupancy,
-                            )
-                        )
-
-                    else:
-                        dyn_obs_current.append(
-                            (
-                                sim_obs.players[player].state.x,
-                                sim_obs.players[player].state.y,
-                                sim_obs.players[player].state.vx,
-                                sim_obs.players[player].occupancy,
-                            )
-                        )
-
-            # create rtree for dynamic obstacles at each level of the graph (i.e. prepare efficient search for collision checking)
-            states_dyn_obs = self.collision_checker.states_other_cars(dyn_obs_current)
-            self.count_removed_branches = 0  # note: assume one branch per lane change
-            for k in range(weighted_graph.num_goal_nodes):
-                djikstra_solver = Dijkstra(weighted_graph)
-                self.shortest_path = djikstra_solver.path(
-                    start_node=weighted_graph.start_node, goal_node=weighted_graph.goal_node
-                )
-                # collision checking on shortest path with RTree for every time step
-                if self.collision_checker.has_collision(
-                    shortest_path=self.shortest_path, states_other_cars=states_dyn_obs, occupancy=current_occupancy
-                ):
-                    print("Collision detected. Recomputing shortest path.")
-                    # eliminate nodes and edges of the shortest path from the graph
-                    edges_to_remove = [
-                        (self.shortest_path[k + i], self.shortest_path[k + i + 1])
-                        for i in range(0, len(self.shortest_path) - k - 1)
-                    ]
-                    weighted_graph.graph.remove_edges_from(edges_to_remove)
-                    weighted_graph.graph.remove_nodes_from(
-                        self.shortest_path[(k + 1) : -1]
-                    )  # exclude start and goal node
-                    # Update adjacency list and weights
-                    for u, v in edges_to_remove:
-                        if u in weighted_graph.adj_list:
-                            weighted_graph.adj_list[u].discard(v)
-                    # plot_graph(weighted_graph.graph, self.lanelet_network.lanelet_polygons, [])
-                    self.count_removed_branches += 1
-                    self.shortest_path = []
-                    continue
                 else:
-                    # a path without collision was found
-                    print("Found path without collision.")
-                    break
+                    dyn_obs_current.append(
+                        (
+                            sim_obs.players[player].state.x,
+                            sim_obs.players[player].state.y,
+                            sim_obs.players[player].state.vx,
+                            sim_obs.players[player].occupancy,
+                        )
+                    )
 
-            if self.shortest_path and self.count_removed_branches < self.depth:
-                self.state = StateMachine.EXECUTE_LANE_CHANGE
-                self.num_steps_path = len(self.shortest_path) - 1  # exclude virtual goal node
-                self.path_node = 0
+        # create rtree for dynamic obstacles at each level of the graph (i.e. prepare efficient search for collision checking)
+        states_dyn_obs = self.collision_checker.states_other_cars(
+            dyn_obs_current,
+            self.lane_orientation,
+            self.time_horizon,
+            self.depth,
+            self.steps_lane_change,
+        )
 
+        self.count_removed_branches = 0  # note: assume one branch per lane change
+        for k in range(weighted_graph.num_goal_nodes):
+            djikstra_solver = Dijkstra(weighted_graph)
+            self.shortest_path = djikstra_solver.path(
+                start_node=weighted_graph.start_node, goal_node=weighted_graph.goal_node
+            )
+            # collision checking on shortest path with RTree for every time step
+            if self.collision_checker.has_collision(
+                shortest_path=self.shortest_path, states_other_cars=states_dyn_obs, occupancy=current_occupancy
+            ):
+                print("Collision detected. Recomputing shortest path.")
+                # eliminate nodes and edges of the shortest path from the graph
+                edges_to_remove = [
+                    (self.shortest_path[k + i], self.shortest_path[k + i + 1])
+                    for i in range(0, len(self.shortest_path) - k - 1)
+                ]
+                weighted_graph.graph.remove_edges_from(edges_to_remove)
+                weighted_graph.graph.remove_nodes_from(self.shortest_path[(k + 1) : -1])  # exclude start and goal node
+                # Update adjacency list and weights
+                for u, v in edges_to_remove:
+                    if u in weighted_graph.adj_list:
+                        weighted_graph.adj_list[u].discard(v)
+                # plot_graph(weighted_graph.graph, self.lanelet_network.lanelet_polygons, [])
+                self.count_removed_branches += 1
+                self.shortest_path = []
+                continue
             else:
+                # a path without collision was found
+                print("Found path without collision.")
+                break
+
+        if self.shortest_path and self.count_removed_branches < self.depth:
+            self.state = StateMachine.EXECUTE_LANE_CHANGE
+            self.num_steps_path = len(self.shortest_path) - 1  # exclude virtual goal node
+            self.path_node = 0
+
+        else:
+            self.state = StateMachine.HOLD_LANE
+
+    def handle_execute_lane_change_state(self, current_state, sim_obs) -> VehicleCommands:
+        idx = int(self.freq_counter % (self.n_steps / self.scaling_dt))
+
+        # remain in EXECUTE_LANE_CHANGE state as we are inbetween graph nodes
+        if idx != 0:
+            self.freq_counter += 1
+            return VehicleCommands(
+                acc=self.shortest_path[self.path_node][3][idx].acc,
+                ddelta=self.shortest_path[self.path_node][3][idx].ddelta,
+            )
+
+        # new graph node reached, switch to HOLD_LANE if we're at the goal node, else we stay until the goal node is reached
+        else:
+            self.path_node += 1
+            if self.path_node == self.num_steps_path:  # goal node reached
                 self.state = StateMachine.HOLD_LANE
-
-        if self.state == StateMachine.EXECUTE_LANE_CHANGE:  # case: A* found a path -> lane change
-            idx = int(self.freq_counter % (self.n_steps / self.scaling_dt))
-
-            # remain in EXECUTE_LANE_CHANGE state as we are inbetween graph nodes
-            if idx != 0:
+                acc = self.velocity_controller.abstandhalteassistent(current_state, sim_obs.players)
+                ddelta = self.custom_steer_controller.spurhalteassistent(current_state, float(sim_obs.time))
+                self.freq_counter = 0  # done with lane change -> reset freq_counter
+                return VehicleCommands(acc, ddelta)
+            else:
                 self.freq_counter += 1
                 return VehicleCommands(
                     acc=self.shortest_path[self.path_node][3][idx].acc,
                     ddelta=self.shortest_path[self.path_node][3][idx].ddelta,
                 )
 
-            # new graph node reached, switch to HOLD_LANE if we're at the goal node, else we stay until the goal node is reached
-            else:
-                self.path_node += 1
-                if self.path_node == self.num_steps_path:  # goal node reached
-                    self.state = StateMachine.HOLD_LANE
-                    acc = self.velocity_controller.abstandhalteassistent(current_state, sim_obs.players)
-                    ddelta = self.custom_steer_controller.spurhalteassistent(current_state, float(sim_obs.time))
-                    self.freq_counter = 0  # done with lane change -> reset freq_counter
-                    return VehicleCommands(acc, ddelta)
-                else:
-                    self.freq_counter += 1
-                    return VehicleCommands(
-                        acc=self.shortest_path[self.path_node][3][idx].acc,
-                        ddelta=self.shortest_path[self.path_node][3][idx].ddelta,
-                    )
+    def handle_hold_lane_state(self, current_state, sim_obs) -> VehicleCommands:
+        # check if car is on goal lane
+        player_lanelet_id = self.lanelet_network.find_lanelet_by_position(
+            [np.array([current_state.x, current_state.y])]
+        )
 
-        if self.state == StateMachine.HOLD_LANE:  # default case: continue on lane
-            # check if car is on goal lane
-            player_lanelet_id = self.lanelet_network.find_lanelet_by_position(
-                [np.array([current_state.x, current_state.y])]
-            )
+        if player_lanelet_id[0][0] in self.goal_lane_ids:  # stay on goal lane
+            self.state = StateMachine.GOAL_STATE
+        else:  # stay on current lane for 0.5s and attempt lane change again
+            self.state = StateMachine.ATTEMPT_LANE_CHANGE
 
-            if player_lanelet_id[0][0] in self.goal_lane_ids:  # stay on goal lane
-                self.state = StateMachine.GOAL_STATE
-            else:  # stay on current lane for 0.5s and attempt lane change again
-                self.state = StateMachine.ATTEMPT_LANE_CHANGE
+        acc = self.velocity_controller.abstandhalteassistent(current_state, sim_obs.players)
+        ddelta = self.custom_steer_controller.spurhalteassistent(current_state, float(sim_obs.time))
+        return VehicleCommands(acc, ddelta)
 
-            acc = self.velocity_controller.abstandhalteassistent(current_state, sim_obs.players)
-            ddelta = self.custom_steer_controller.spurhalteassistent(current_state, float(sim_obs.time))
-            return VehicleCommands(acc, ddelta)
-
-        if self.state == StateMachine.GOAL_STATE:
-            acc = self.velocity_controller.abstandhalteassistent(current_state, sim_obs.players)
-            ddelta = self.custom_steer_controller.spurhalteassistent(current_state, float(sim_obs.time))
-            return VehicleCommands(acc, ddelta)
+    def handle_goal_state(self, current_state, sim_obs) -> VehicleCommands:
+        """Handle the goal state of the agent."""
+        # In the goal state, we can simply return the commands to maintain the current speed and direction.
+        acc = self.velocity_controller.abstandhalteassistent(current_state, sim_obs.players)
+        ddelta = self.custom_steer_controller.spurhalteassistent(current_state, float(sim_obs.time))
+        return VehicleCommands(acc, ddelta)
 
     def retrieve_goal_lane_ids(self) -> list:
         goal_lane_ids = [self.goal_id]
