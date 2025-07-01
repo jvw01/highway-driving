@@ -1,65 +1,29 @@
-from hmac import new
-from mimetypes import init
 from dataclasses import dataclass
-from re import S
-from sre_parse import State
-from tracemalloc import start
-from typing import Sequence
-
-from commonroad.scenario.lanelet import LaneletNetwork
-from cvxopt import normal
-from cycler import K
 from dg_commons import PlayerName
-from dg_commons.sim.goals import PlanningGoal, RefLaneGoal
+from dg_commons.sim.goals import PlanningGoal
 from dg_commons.sim import SimObservations, InitSimObservations
 from dg_commons.sim.agents import Agent
-from dg_commons.sim.models.obstacles import StaticObstacle
 from dg_commons.sim.models.vehicle import VehicleCommands
 from dg_commons.sim.models.vehicle_structures import VehicleGeometry
-from dg_commons.sim.models.vehicle_utils import VehicleParameters, steering_constraint
-
-# our imports:
-from dg_commons.planning.motion_primitives import MotionPrimitivesGenerator, MPGParam
-from dg_commons.sim.models.vehicle import VehicleState, VehicleModel
+from dg_commons.sim.models.vehicle_utils import VehicleParameters
+from dg_commons.sim.models.vehicle import VehicleState
 from decimal import Decimal
-from dg_commons import logger, Timestamp, LinSpaceTuple
-from dg_commons.sim.models.model_utils import apply_full_acceleration_limits
-from dg_commons.dynamics import BicycleDynamics
 import frozendict
-from matplotlib import markers
-from shapely import linestrings
-from sympy import Mul, primitive
 from dataclasses import dataclass
 from decimal import Decimal
-from itertools import product
-from typing import List, Callable, Set, Optional
-from dg_commons import logger, Timestamp, LinSpaceTuple
-from dg_commons.planning.trajectory import Trajectory
-from dg_commons.sim.models import vehicle_ligths
-from dg_commons.sim.models.vehicle_ligths import LightsCmd
-from networkx import DiGraph, shortest_path
 from shapely.geometry import Polygon
 from matplotlib.collections import LineCollection
-from shapely.geometry import LineString
-from dg_commons.controllers.pid import PID
 from dg_commons.controllers.steer import SteerController
 from dg_commons.controllers.pure_pursuit import PurePursuit
-from geometry.types import SE2value, E2value
 import numpy as np
 import math
-import time
-import random
 import enum
 from shapely.affinity import translate, rotate
 from shapely.strtree import STRtree
 
-from pdm4ar.exercises_def.ex09 import goal
-
-
-from .graph import WeightedGraph, generate_graph
-from .motion_primitves import calc_next_state, generate_primat
-from .astar import Astar
-
+from pdm4ar.exercises.ex12.graph import generate_graph
+from pdm4ar.exercises.ex12.motion_primitves import calc_next_state, generate_primat
+from pdm4ar.exercises.ex12.dijkstra import Dijkstra
 
 class StateMachine(enum.Enum):
     INITIALIZATION = 1
@@ -87,7 +51,7 @@ class Pdm4arAgent(Agent):
     lane_width: float
 
     # parameters for the velocity controler:
-    d_ref: float = 2  # 2 for first commit
+    d_ref: float = 2
     d_ref_K = 0.5
     T: float = 8
     init_abstand: bool = False
@@ -97,10 +61,9 @@ class Pdm4arAgent(Agent):
     K_psi: float = 1
     K_dist: float = 0.1
     K_delta: float = 2
-    # okish results for P-only: k_psi=1, k_dist=0.1, k_delta=2
-    K_d_psi: float = 0.5  # tried: 0.1, 0.5, already 0.1 helps to stabilize
-    K_d_dist: float = 0.1  # first submission: 0.1, tried: 1, 0.5, 0.1. 0.05 (scheint stäker zu schwinken mit höher)
-    K_d_delta: float = 0.1  # first push: 0.1, tried: 1, 0.5, 0.1
+    K_d_psi: float = 0.5
+    K_d_dist: float = 0.1
+    K_d_delta: float = 0.1
 
     pure_pursuit: PurePursuit
     steer_controller: SteerController
@@ -130,9 +93,6 @@ class Pdm4arAgent(Agent):
         self.lanelet_network = init_obs.dg_scenario.lanelet_network  # type: ignore
         self.half_lane_width = init_obs.goal.ref_lane.control_points[1].r  # type: ignore
         self.goal_id = init_obs.dg_scenario.lanelet_network.find_lanelet_by_position([init_obs.goal.ref_lane.control_points[1].q.p])[0][0]  # type: ignore
-        # self.lane_orientation = init_obs.goal.ref_lane.control_points[
-        #     0
-        # ].q.theta  # note: the lane is not entirely straight
         self.state = StateMachine.INITIALIZATION
         self.goal_lane_ids = self.retrieve_goal_lane_ids()
         self.steer_controller = SteerController.from_vehicle_params(vehicle_param=self.vp)
@@ -178,21 +138,7 @@ class Pdm4arAgent(Agent):
 
             # only use 3 motion primitives to have abstandhalteassistent active again as soon as possible
             self.steps_lane_change = 3
-            # self.steps_lane_change = 4  # needs to be multiple of 4
             for i in range(self.steps_lane_change):
-                # case motion primitives multiple of 4
-                # if i == 0:
-                #     case = 0
-                # else:
-                #     multiples = self.steps_lane_change / 4
-
-                #     if i < multiples:
-                #         case = 1
-                #     elif i < 3 * multiples:
-                #         case = 2
-                #     else:
-                #         case = 1
-
                 # case 3 motion primitives
                 if i == 0:
                     case = 0
@@ -239,11 +185,8 @@ class Pdm4arAgent(Agent):
                     delta=current_state.delta + delta,
                 )
 
-            # plot_end_states(end_states, self.lanelet_network.lanelet_polygons)
-
             # build graph
             self.depth = 1  # note: has to be greater than steps_lane_change!
-            # start = time.time()
             weighted_graph = generate_graph(
                 current_state=current_state,
                 end_states_traj=end_states,
@@ -253,13 +196,7 @@ class Pdm4arAgent(Agent):
                 goal_id=self.goal_lane_ids,
                 steps_lane_change=self.steps_lane_change,
             )
-            # end = time.time()
-            # print(f"Generating the graph took {end - start} seconds.")
 
-            # plot_graph(weighted_graph.graph, self.lanelet_network.lanelet_polygons, [])
-
-            # extract current state of dynamic obstacles to be able to propagate them for collision checking
-            # start_other_cars = time.time()
             current_occupancy = sim_obs.players["Ego"].occupancy  # type: ignore
             dyn_obs_current = []
             magic_speed = 6
@@ -268,7 +205,6 @@ class Pdm4arAgent(Agent):
                     if sim_obs.players[player].state.vx > magic_speed:
                         new_occupancy = self.calc_big_occupacy(
                             sim_obs.players[player].occupancy,
-                            sim_obs.players[player].state.psi,
                             sim_obs.players[player].state.x,
                             sim_obs.players[player].state.y,
                         )  # type: ignore
@@ -294,15 +230,10 @@ class Pdm4arAgent(Agent):
 
             # create rtree for dynamic obstacles at each level of the graph (i.e. prepare efficient search for collision checking)
             states_dyn_obs = self.states_other_cars(dyn_obs_current)
-            # end_other_cars = time.time()
-            # print(f"Generating the dynamic obstacles took {end_other_cars - start_other_cars} seconds.")
-
-            # find shortest path with A*
-            # start_astar = time.time()
             self.count_removed_branches = 0  # note: assume one branch per lane change
             for k in range(weighted_graph.num_goal_nodes):
-                astar_solver = Astar(weighted_graph)
-                self.shortest_path = astar_solver.path(
+                djikstra_solver = Dijkstra(weighted_graph)
+                self.shortest_path = djikstra_solver.path(
                     start_node=weighted_graph.start_node, goal_node=weighted_graph.goal_node
                 )
                 # collision checking on shortest path with RTree for every time step
@@ -332,14 +263,6 @@ class Pdm4arAgent(Agent):
                     print("Found path without collision.")
                     break
 
-            # end_astar = time.time()
-            # print(f"A* took {end_astar - start_astar} seconds.")
-
-            # num_branches = 0
-            # for node in weighted_graph.graph.nodes:
-            #     if weighted_graph.graph.out_degree(node) > 1:
-            #         num_branches += 1
-
             if self.shortest_path and self.count_removed_branches < self.depth:
                 self.state = StateMachine.EXECUTE_LANE_CHANGE
                 self.num_steps_path = len(self.shortest_path) - 1  # exclude virtual goal node
@@ -347,21 +270,6 @@ class Pdm4arAgent(Agent):
 
             else:
                 self.state = StateMachine.HOLD_LANE
-
-            # self.plot_collisions(
-            #     states_dyn_obs,
-            #     self.lanelet_network.lanelet_polygons,
-            #     self.shortest_path,
-            #     dyn_obs_current,
-            #     current_occupancy,
-            #     weighted_graph.graph,
-            # )
-
-            # start_plot = time.time()
-            # plot_graph(weighted_graph.graph, self.lanelet_network.lanelet_polygons, self.shortest_path)
-            # plot_graph(weighted_graph.graph, self.lanelet_network.lanelet_polygons, [])
-            # end_plot = time.time()
-            # print(f"Plotting the graph took {end_plot - start_plot} seconds.")
 
         if self.state == StateMachine.EXECUTE_LANE_CHANGE:  # case: A* found a path -> lane change
             idx = int(self.freq_counter % (self.n_steps / self.scaling_dt))
@@ -382,7 +290,7 @@ class Pdm4arAgent(Agent):
                     acc = self.abstandhalteassistent(current_state, sim_obs.players)  # type: ignore
                     ddelta = self.spurhalteassistent(current_state, float(sim_obs.time))  # type: ignore
                     self.freq_counter = 0  # done with lane change -> reset freq_counter
-                    return VehicleCommands(acc, ddelta)  # self.spurhalteassistent(current_state, float(sim_obs.time)))
+                    return VehicleCommands(acc, ddelta)
                 else:
                     self.freq_counter += 1
                     return VehicleCommands(
@@ -399,23 +307,16 @@ class Pdm4arAgent(Agent):
             if player_lanelet_id[0][0] in self.goal_lane_ids:  # stay on goal lane
                 self.state = StateMachine.GOAL_STATE
             else:  # stay on current lane for 0.5s and attempt lane change again
-                # time_hold_lane = 3
-                # if self.freq_counter == time_hold_lane - 1:
-                #     self.state = StateMachine.ATTEMPT_LANE_CHANGE
-                #     self.freq_counter = 0  # reset freq_counter
-                # else:
-                #     self.state = StateMachine.HOLD_LANE
-                #     self.freq_counter += 1
                 self.state = StateMachine.ATTEMPT_LANE_CHANGE
 
             acc = self.abstandhalteassistent(current_state, sim_obs.players)  # type: ignore
             ddelta = self.spurhalteassistent(current_state, float(sim_obs.time))  # type: ignore
-            return VehicleCommands(acc, ddelta)  # self.spurhalteassistent(current_state, float(sim_obs.time)))
+            return VehicleCommands(acc, ddelta)
 
         if self.state == StateMachine.GOAL_STATE:
             acc = self.abstandhalteassistent(current_state, sim_obs.players)  # type: ignore
             ddelta = self.spurhalteassistent(current_state, float(sim_obs.time))  # type: ignore
-            return VehicleCommands(acc, ddelta)  # self.spurhalteassistent(current_state, float(sim_obs.time)))
+            return VehicleCommands(acc, ddelta)
 
     def retrieve_goal_lane_ids(self) -> list:
         goal_lane_ids = [self.goal_id]
@@ -428,7 +329,7 @@ class Pdm4arAgent(Agent):
         return goal_lane_ids
 
     def calc_time_horizon_and_ddelta(self, current_state: VehicleState) -> tuple[float, float]:
-        # heurisitic approach: in first motion primitive with delta_max, the car drives approximately a fifth/sixth/seventh/eighth of the lane width in y' direction
+        # heurisitic approach: in first motion primitive with delta_max, the car drives approximately a sixth of the lane width in y' direction
         delta_y = self.half_lane_width * (1 / 3)
         n_steps = 0
         init_state_y = current_state.y
@@ -492,9 +393,6 @@ class Pdm4arAgent(Agent):
                 vx=current_state.vx,
                 delta=current_state.delta,
             )
-
-            # next_state_pos = np.array([next_state.x, next_state.y])
-
         return (time_horizon, ddelta)
 
     def states_other_cars(self, dyn_obs_current: list) -> list:
@@ -539,30 +437,31 @@ class Pdm4arAgent(Agent):
 
     def spurhalteassistent(self, current_state: VehicleState, t: float) -> float:
         cur_lanelet_id = self.lanelet_network.find_lanelet_by_position([np.array([current_state.x, current_state.y])])
+
         if not cur_lanelet_id[0]:
             print("No lanelet found")
             return 0.0
+
         cur_lanelet = self.lanelet_network._lanelets[cur_lanelet_id[0][0]]
         center_vertices = cur_lanelet.center_vertices
         lanelet_heading = math.atan2(
             center_vertices[-1][1] - center_vertices[0][1], center_vertices[-1][0] - center_vertices[0][0]
-        )  # should not be necessary, just to prevent numerical drift TODO: not take current lanelet heading but interpolation???
+        )
         line_vec = center_vertices[-1] - center_vertices[0]
         normal_vec = np.array([-line_vec[1], line_vec[0]])
         normal_vec = normal_vec / np.linalg.norm(normal_vec)
         dist = np.dot(
             normal_vec, np.array([current_state.x, current_state.y]) - center_vertices[0]
         )  # should already have correct sign
-        # print(dist)
         dpsi = current_state.psi - lanelet_heading
+
         if not self.init_control:
             self.init_control = True
             self.last_dist = dist
             self.last_dpsi = dpsi
             self.last_delta = current_state.delta
-            return (
-                -1 * dpsi - 0.1 * dist - 2 * current_state.delta  # hardcoded to tune the PD controller
-            )  # -self.K_psi * dpsi - self.K_dist * dist - self.K_delta * current_state.delta
+            return -1 * dpsi - 0.1 * dist - 2 * current_state.delta
+
         d_dist = (dist - self.last_dist) / float(self.dt)
         d_dpsi = (dpsi - self.last_dpsi) / float(self.dt)
         d_delta = (current_state.delta - self.last_delta) / float(self.dt)
@@ -578,18 +477,20 @@ class Pdm4arAgent(Agent):
             - self.K_delta * current_state.delta
             - self.K_d_delta * d_delta
         )
+
         if abs(dist) < 0.05 and abs(current_state.delta) < 0.01:
             self.steer_controller.update_measurement(measurement=current_state.delta)
             self.steer_controller.update_reference(reference=0)
             ddelta = self.steer_controller.get_control(t)
             return min(max(ddelta, -self.vp.ddelta_max), self.vp.ddelta_max)
-        # print(ddelta)
+
         return ddelta
 
     def retrieve_current_lane_ids(self, lane_id) -> list:
         current_lane_ids = [lane_id]
         lanelet = self.lanelet_network.find_lanelet_by_id(current_lane_ids[-1])
         successor_id = lanelet.successor
+
         while successor_id:
             current_lane_ids.append(successor_id[0])
             successor_id = self.lanelet_network.find_lanelet_by_id(successor_id[0]).successor
@@ -598,20 +499,9 @@ class Pdm4arAgent(Agent):
 
     def abstandhalteassistent(self, current_state: VehicleState, players: frozendict) -> float:
         player_ahead = None
-        # start_time = time.time()
-        # for player in players:
-        #     if player != self.name:
-        #         diff_angle = np.arctan2(
-        #             players[player].state.y - current_state.y, players[player].state.x - current_state.x
-        #         )
-        #         if abs(diff_angle - current_state.psi) < 0.04:
-        #             player_ahead = players[player]
-        # end_time = time.time()
-        # print(f"Finding player ahead took {end_time - start_time} seconds.")
-
-        # start_time = time.time()
         goal_x = self.goal.goal_polygon.centroid.x
         my_lanelet_id = self.lanelet_network.find_lanelet_by_position([np.array([current_state.x, current_state.y])])
+
         if my_lanelet_id[0]:
             current_lane_ids = self.retrieve_current_lane_ids(my_lanelet_id[0][0])
             for player in players:
@@ -626,16 +516,11 @@ class Pdm4arAgent(Agent):
                             goal_x - current_state.x
                         ):  # note: has singularity at lane heading of 90 deg
                             player_ahead = players[player]
-        # end_time = time.time()
-        # print(f"Finding player ahead took {end_time - start_time} seconds.")
 
         if player_ahead:
-            # start_time = time.time()
             dist_to_player = math.sqrt(
                 (player_ahead.state.x - current_state.x) ** 2 + (player_ahead.state.y - current_state.y) ** 2
             )
-
-            # d_ref= self.d_ref_K * player_ahead.state.vx
             d_ref = self.d_ref_K * player_ahead.state.vx
             poly_edges = list(player_ahead.occupancy.exterior.coords)
             l_half_ahead = math.sqrt(
@@ -651,12 +536,12 @@ class Pdm4arAgent(Agent):
                 return (player_ahead.state.vx / self.T + self.d_ref) * (
                     self.last_e
                 )  # P-controler for first time step, here last_e is also the current error
+
             de = (e - self.last_e) / float(self.dt)
             self.last_e = e
-            K_p = player_ahead.state.vx / self.T + self.d_ref  # TODO: 3 == self.d_ref?
+            K_p = player_ahead.state.vx / self.T + self.d_ref
+
             return K_p * (self.T * de + e)
-            # end_time = time.time()
-            # print(f"Calculating acc took {end_time - start_time} seconds.")
 
         else:
             # increase/decrease speed if car is too slow/fast (avoid velocity penalty) - else keep speed
@@ -667,20 +552,13 @@ class Pdm4arAgent(Agent):
             else:
                 return 0.0
 
-    def calc_big_occupacy(self, occupancy: Polygon, psi: float, x: float, y: float) -> Polygon:
+    def calc_big_occupacy(self, occupancy: Polygon, x: float, y: float) -> Polygon:
         # enlarge occupancy polygon to avoid collisions
-        # x, y = occupancy.centroid.coords._coords[0]
         coordinates = list(occupancy.exterior.coords)[:-1]
         new_coords = []
         c_coords = [x, y]
-        for coords in coordinates:
-            # gamma = math.atan2(coords[1] - y, coords[0] - x)
-            # if gamma < psi + math.pi / 4 and gamma > psi - math.pi / 4:
-            #     r_ce = [coords[0] - x, coords[1] - y]
-            #     new_e = [c_coords[0] + 1.05 * r_ce[0], c_coords[1] + 1.05 * r_ce[1]]
-            #     new_coords.append(new_e)
-            # elif gamma > psi + 3 * math.pi / 4 and gamma <psi - math.pi 3/ 4:
 
+        for coords in coordinates:
             r_ce = [coords[0] - x, coords[1] - y]
             m = 1.5
             new_e = [c_coords[0] + m * r_ce[0], c_coords[1] + m * r_ce[1]]
@@ -702,6 +580,7 @@ class Pdm4arAgent(Agent):
         # Collect all node coordinates
         node_coords = []
         edge_coords = []
+
         for parent in graph.nodes:
             if parent[0] == -1:  # Skip the virtual goal node
                 continue
@@ -775,201 +654,3 @@ class Pdm4arAgent(Agent):
         plt.savefig(filename, bbox_inches="tight")  # Save the plot with tight bounding box
         plt.close()
         print(f"Graph saved to {filename}")
-
-
-### ADDITIONAL HELPER FUNCTIONS ###
-import matplotlib.pyplot as plt
-import os
-import time
-from matplotlib.collections import LineCollection
-
-
-def plot_end_states(end_states, lanelet_polygons):
-    plt.figure(figsize=(30, 25), dpi=250)
-    ax = plt.gca()
-
-    # Plot end states
-    for state_list in end_states:
-        x_coords = [state.x for state in state_list]
-        y_coords = [state.y for state in state_list]
-        plt.scatter(x_coords, y_coords, s=1, color="blue")  # Plot points and lines
-
-    # Plot static obstacles
-    for lanelet in lanelet_polygons:
-        x, y = lanelet.shapely_object.exterior.xy
-        plt.plot(x, y, linestyle="-", linewidth=0.8, color="darkorchid")
-
-    ax.set_aspect("equal", adjustable="box")
-
-    output_dir = "/tmp"
-    os.makedirs(output_dir, exist_ok=True)
-    filename = os.path.join(output_dir, "end_states.png")
-    plt.savefig(filename, bbox_inches="tight")  # Save the plot with tight bounding box
-    plt.close()
-    print(f"Graph saved to {filename}")
-
-
-def plot_graph(graph, lanelet_polygons, shortest_path):
-    plt.figure(figsize=(30, 25), dpi=250)
-    ax = plt.gca()
-
-    # Collect all node coordinates
-    node_coords = []
-    edge_coords = []
-    for parent in graph.nodes:
-        if parent[0] == -1:  # Skip the virtual goal node
-            continue
-        parent_x, parent_y = parent[1].x, parent[1].y
-        node_coords.append((parent_x, parent_y))
-
-        for child in graph.successors(parent):
-            if child[0] == -1:  # Skip edges to the virtual goal node
-                continue
-            child_x, child_y = child[1].x, child[1].y
-            edge_coords.append([(parent_x, parent_y), (child_x, child_y)])
-
-    # Plot all nodes at once
-    node_coords = np.array(node_coords)
-    plt.scatter(node_coords[:, 0], node_coords[:, 1], color="blue", s=1)
-
-    # Plot all edges at once using LineCollection
-    edge_collection = LineCollection(edge_coords, colors="blue", linewidths=0.3)
-    ax.add_collection(edge_collection)
-
-    # Plot the shortest path
-    if shortest_path:
-        path_coords = []
-        for node in shortest_path:
-            if node[0] == -1:  # Skip the virtual goal node
-                continue
-            node_x, node_y = node[1].x, node[1].y
-            path_coords.append((node_x, node_y))
-
-        path_coords = np.array(path_coords)
-        plt.plot(path_coords[:, 0], path_coords[:, 1], color="red", linewidth=1.5, marker="o", markersize=2)
-
-    # Plot static obstacles
-    for lanelet in lanelet_polygons:
-        x, y = lanelet.shapely_object.exterior.xy
-        plt.plot(x, y, linestyle="-", linewidth=0.8, color="darkorchid")
-
-    ax.set_aspect("equal", adjustable="box")
-
-    # Add ticks every 10 steps on the x-axis
-    ax.set_xticks(np.arange(-120, max(node_coords[:, 0]) + 10, 10))
-
-    output_dir = "/tmp"
-    os.makedirs(output_dir, exist_ok=True)
-    filename = os.path.join(output_dir, "graph.png")
-    plt.savefig(filename, bbox_inches="tight")  # Save the plot with tight bounding box
-    plt.close()
-    print(f"Graph saved to {filename}")
-
-
-### BACKUP ###
-# current_lanelet_id = self.lanelet_network.find_lanelet_by_position(
-#     [np.array([current_state.x, current_state.y])]
-# )[0][0]
-# current_lanelet = self.lanelet_network.find_lanelet_by_id(current_lanelet_id)
-# center_vertices = current_lanelet.center_vertices
-# if center_vertices[0][0] > center_vertices[-1][0]:
-#     reverse = True
-#     center_vertices = center_vertices[::-1]
-
-# for i in range(self.idx_previous_center_point, len(center_vertices)):
-#     if center_vertices[i][0] > current_state.x:
-#         lane_orientation = math.atan2(
-#             center_vertices[i][1] - center_vertices[i - 1][1],
-#             center_vertices[i][0] - center_vertices[i - 1][0],
-#         )
-#         self.lane_orientation = lane_orientation if not reverse else lane_orientation + math.pi
-#         self.idx_previous_center_point = i - 1 if i > 0 else 0
-#         break
-# def gib_ihm(self, current_state: VehicleState) -> float:
-#     """ "Probably delete this function and integrate it into abstandhalteassistent for final version, thought it was funny"""
-#     if current_state.vx >= 24.5:
-#         return 0.0
-#     return self.vp.acc_limits[1]
-
-# formula: time_horizon = lateral distance to goal lane / (v_x * tan(delta_max))
-# print("delta_max: ", self.vp.delta_max)
-# lat_dist_to_goal_lane = self.half_lane_width
-# if current_state.vx > 0 and self.vp.delta_max > 0:
-#     self.time_horizon = lat_dist_to_goal_lane / (current_state.vx * math.tan(self.vp.delta_max))
-#     self.time_horizon = max(0.2, min(self.time_horizon, 1.0))  # clamp between 0.2 and 1.0
-#     self.time_horizon = round(self.time_horizon * 10) / 10.0 # round to neareast multiple of 0.1
-# else:
-#     self.time_horizon = 0.5  # fallback
-
-# a = self.vg.wheelbase / (self.vg.lr * current_state.vx * math.tan(self.vp.delta_max))
-# w = self.half_lane_width / 2
-# self.time_horizon = (
-#     w * math.cos(self.lane_orientation) / ((1 / a) - current_state.vx * math.sin(self.lane_orientation))
-# )
-
-# function that takes the goal and creates a list of shapely lines that mark the goal lane
-# def define_goal_lines(self) -> List[LineString]:
-
-#     line_segments = []
-#     current_line_points = []
-#     previous_theta = None
-
-#     control_points = self.goal.ref_lane.control_points
-#     for idx, centerline_point in enumerate(control_points):
-#         # as long as theta is the same, create a shapely line connecting them
-#         centerpoint = tuple(centerline_point.q.p)
-#         theta = centerline_point.q.theta
-
-#         if idx == 0:
-#             current_line_points.append(centerpoint)
-#             previous_theta = theta
-#         else:
-#             if theta != previous_theta:
-#                 if len(current_line_points) > 1:
-#                     line_segments.append(LineString(current_line_points))
-#                 current_line_points = [current_line_points[-1], centerpoint]
-
-#             else:
-#                 current_line_points.append(centerpoint)
-#             previous_theta = theta
-
-#     if len(current_line_points) > 1:
-#         line_segments.append(LineString(current_line_points))
-
-#     print(control_points)
-#     print(line_segments)
-
-#     return line_segments
-
-# def propagate_state(self, x_pos: float, y_pos: float, vx: float, depth: int) -> list:
-#     propagated_states = []
-#     time_horizon = self.n_steps * float(self.dt)
-#     s = vx * time_horizon  # note: cars do not change lanes
-#     for i in range(depth):
-#         propagated_states.append(
-#             (x_pos + i * s * math.cos(self.lane_orientation), y_pos + i * s * math.sin(self.lane_orientation))
-#         )
-
-#     return propagated_states
-
-# def plot_other_cars(init_pos, future_pos, lanelet_polygons):
-#     plt.figure(figsize=(30, 25), dpi=250)
-#     ax = plt.gca()
-
-#     # Plot static obstacles (from on_episode_init)
-#     for lanelet in lanelet_polygons:
-#         x, y = lanelet.shapely_object.exterior.xy
-#         plt.plot(x, y, linestyle="-", linewidth=0.8, color="darkorchid")
-
-#     plt.scatter(init_pos[0], init_pos[1], color="red", s=10)
-#     for pos in future_pos:
-#         plt.scatter(pos[0], pos[1], color="red", s=10)
-
-#     ax.set_aspect("equal", adjustable="box")
-
-#     output_dir = "/tmp"
-#     os.makedirs(output_dir, exist_ok=True)
-#     filename = os.path.join(output_dir, "other_cars.png")
-#     plt.savefig(filename, bbox_inches="tight")  # Save the plot with tight bounding box
-#     plt.close()
-#     print(f"Graph saved to {filename}")

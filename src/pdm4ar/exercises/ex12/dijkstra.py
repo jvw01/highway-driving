@@ -24,14 +24,7 @@ class InformedGraphSearch(ABC):
 
 # node structure: (level: int, state: VehicleState, is_goal: bool, cmds: tuple[List[VehicleCommands]])
 @dataclass
-class Astar(InformedGraphSearch):
-
-    def heuristic(self, u: tuple, v: tuple) -> float:
-        # dist_to_goal_x = v.x - u.x
-        # dist_to_goal_y = v.y - u.y
-        # euclidean_distance = np.sqrt(dist_to_goal_x**2 + dist_to_goal_y**2)
-        pass
-
+class Dijkstra(InformedGraphSearch):
     def path(self, start_node: tuple, goal_node: tuple) -> Path:
         weighted_graph = self.weighted_graph
         heap: list[tuple[float, tuple]] = [(0, start_node)]  # (total_cost, node) it's important that cost comes first s.t. heapq can prioritize correctly
@@ -62,10 +55,8 @@ class Astar(InformedGraphSearch):
                     continue # Skip already processed neighbors
 
                 weight = weighted_graph.get_weight(root, new_state)
-                new_cost_to_reach = cost_to_reach[root] + weight # costToReach(s) + w(s,a,s')       w is the cost from the current node to the new / subsequent node
-
-                # total_cost = new_cost_to_reach + self.heuristic(new_state, goal)  # heuristik muss nur von aktueller node dazugerechnet werden und nicht die bisherigen heuristiken auch in den costToReach reinrechnen!
-                total_cost = new_cost_to_reach # TODO implement heuristic
+                new_cost_to_reach = cost_to_reach[root] + weight # costToReach(s) + w(s,a,s') --> w is the cost from the current node to the new / subsequent node
+                total_cost = new_cost_to_reach
 
                 # if new state state has not been visited yet or if new path is cheaper
                 # it's possible that the new_state has already been reached through another (potentially cheaper) path which is already stored in cost_to_reach[new_state]

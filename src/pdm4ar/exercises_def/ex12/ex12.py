@@ -16,7 +16,7 @@ from pdm4ar.exercises_def.ex12.perf_metrics import (
     get_task_performance,
 )
 from pdm4ar.exercises_def.ex12.sim_context import get_sim_contexts
-from .utils import get_collision_reports
+from pdm4ar.exercises_def.ex12.utils import get_collision_reports
 
 
 def ex12_evaluation(sim_context: SimContext, ex_out=None) -> Tuple[PlayerMetrics, Report]:
