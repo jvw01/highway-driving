@@ -8,7 +8,6 @@ from dg_commons.sim.models.vehicle_structures import VehicleGeometry
 from dg_commons.sim.models.vehicle_utils import VehicleParameters
 from dg_commons.sim.models.vehicle import VehicleState
 from decimal import Decimal
-import frozendict
 from dataclasses import dataclass
 from decimal import Decimal
 from shapely.geometry import Polygon
@@ -20,10 +19,14 @@ import math
 import enum
 from shapely.affinity import translate, rotate
 from shapely.strtree import STRtree
+import matplotlib.pyplot as plt
 
 from pdm4ar.exercises.ex12.graph import generate_graph
 from pdm4ar.exercises.ex12.motion_primitves import calc_next_state, generate_primat
 from pdm4ar.exercises.ex12.dijkstra import Dijkstra
+from pdm4ar.exercises.ex12.planning.collision_checker import CollisionChecker
+from pdm4ar.exercises.ex12.controllers.velocity_controller import VelocityController, VelocityControllerParams
+from pdm4ar.exercises.ex12.controllers.steering_controller import CustomSteerController, SteeringControllerParams
 
 class StateMachine(enum.Enum):
     INITIALIZATION = 1
@@ -50,21 +53,6 @@ class Pdm4arAgent(Agent):
     dt: Decimal
     lane_width: float
 
-    # parameters for the velocity controler:
-    d_ref: float = 2
-    d_ref_K = 0.5
-    T: float = 8
-    init_abstand: bool = False
-    last_e: float
-
-    # parameters for the steering controller:
-    K_psi: float = 1
-    K_dist: float = 0.1
-    K_delta: float = 2
-    K_d_psi: float = 0.5
-    K_d_dist: float = 0.1
-    K_d_delta: float = 0.1
-
     pure_pursuit: PurePursuit
     steer_controller: SteerController
     last_dpsi: float
@@ -78,27 +66,50 @@ class Pdm4arAgent(Agent):
         self.myplanner = ()
 
     def on_episode_init(self, init_obs: InitSimObservations):
-        """This method is called by the simulator only at the beginning of each simulation.
-        Do not modify the signature of this method."""
+        """
+        This method is called by the simulator only at the beginning of each simulation.
+        Do not modify the signature of this fmethod.
+        """
         self.name = init_obs.my_name
-        self.goal = init_obs.goal  # type: ignore
-        self.vg = init_obs.model_geometry  # type: ignore
-        self.vp = init_obs.model_params  # type: ignore
-        self.dt = init_obs.dg_scenario.scenario.dt  # type: ignore
-
-        # additional class variables
+        self.goal = init_obs.goal
+        self.vg = init_obs.model_geometry
+        self.vp = init_obs.model_params
+        self.dt = init_obs.dg_scenario.scenario.dt
         self.dt_integral = 0.01  # time step for integral part of motion primitives
         self.scaling_dt = 0.1 / self.dt_integral  # scaling factor for get_commands frequency (0.1s)
-
-        self.lanelet_network = init_obs.dg_scenario.lanelet_network  # type: ignore
-        self.half_lane_width = init_obs.goal.ref_lane.control_points[1].r  # type: ignore
-        self.goal_id = init_obs.dg_scenario.lanelet_network.find_lanelet_by_position([init_obs.goal.ref_lane.control_points[1].q.p])[0][0]  # type: ignore
+        self.lanelet_network = init_obs.dg_scenario.lanelet_network
+        self.half_lane_width = init_obs.goal.ref_lane.control_points[1].r
+        self.goal_id = init_obs.dg_scenario.lanelet_network.find_lanelet_by_position(
+            [init_obs.goal.ref_lane.control_points[1].q.p]
+        )[0][0]
         self.state = StateMachine.INITIALIZATION
         self.goal_lane_ids = self.retrieve_goal_lane_ids()
         self.steer_controller = SteerController.from_vehicle_params(vehicle_param=self.vp)
         self.freq_counter = 0
         self.shortest_path = []
         self.idx_previous_center_point = 0
+        self.depth = 1  # note: has to be greater than steps_lane_change!
+        self.steps_lane_change = 3  # number of motion primitives to change lanes
+
+        # initialize velocity controller
+        velocity_params = VelocityControllerParams()
+        self.velocity_controller = VelocityController(
+            params=velocity_params,
+            vp=self.vp,
+            goal=self.goal,
+            lanelet_network=self.lanelet_network,
+            name=self.name,
+            dt=self.dt,
+        )
+
+        # initialize steering controller
+        steering_controller_params = SteeringControllerParams()
+        self.custom_steer_controller = CustomSteerController(
+            params=steering_controller_params,
+            dt=self.dt,
+            vp=self.vp,
+            lanelet_network=self.lanelet_network,
+        )
 
     def get_commands(self, sim_obs: SimObservations) -> VehicleCommands:
         """This method is called by the simulator every dt_commands seconds (0.1s by default).
@@ -109,12 +120,12 @@ class Pdm4arAgent(Agent):
         :param sim_obs:
         :return:
         """
-        current_state = sim_obs.players["Ego"].state  # type: ignore
+        current_state = sim_obs.players["Ego"].state
 
         if self.state == StateMachine.INITIALIZATION:
             self.lane_orientation = sim_obs.players[
                 "Ego"
-            ].state.psi  # type: ignore # assuming that lane orientation == initial orientation vehicle
+            ].state.psi  # assuming that lane orientation == initial orientation vehicle
             # check whether goal lane is left or right of current lane
             lanelet_id = self.lanelet_network.find_lanelet_by_position([np.array([current_state.x, current_state.y])])[
                 0
@@ -132,14 +143,19 @@ class Pdm4arAgent(Agent):
             self.n_steps = int(self.time_horizon / self.dt_integral)
             self.delta_steer = ddelta * self.time_horizon
 
+            # initialize collision checker
+            self.collision_checker = CollisionChecker(
+                lane_orientation=self.lane_orientation,
+                time_horizon=self.time_horizon,
+                depth=self.depth,
+                steps_lane_change=self.steps_lane_change,
+            )
+
             end_states = []
             control_inputs = []
             state = current_state
 
-            # only use 3 motion primitives to have abstandhalteassistent active again as soon as possible
-            self.steps_lane_change = 3
             for i in range(self.steps_lane_change):
-                # case 3 motion primitives
                 if i == 0:
                     case = 0
                 elif i == 1:
@@ -160,7 +176,7 @@ class Pdm4arAgent(Agent):
                 end_states.append(end_state)
                 control_inputs.append(control_input)
 
-                if i == self.steps_lane_change - 1:  # to avoid unncecessary computations
+                if i == self.steps_lane_change - 1:
                     break
 
                 dx = end_state[-1].x - current_state.x
@@ -186,7 +202,6 @@ class Pdm4arAgent(Agent):
                 )
 
             # build graph
-            self.depth = 1  # note: has to be greater than steps_lane_change!
             weighted_graph = generate_graph(
                 current_state=current_state,
                 end_states_traj=end_states,
@@ -197,39 +212,39 @@ class Pdm4arAgent(Agent):
                 steps_lane_change=self.steps_lane_change,
             )
 
-            current_occupancy = sim_obs.players["Ego"].occupancy  # type: ignore
+            current_occupancy = sim_obs.players["Ego"].occupancy
             dyn_obs_current = []
             magic_speed = 6
             for player in sim_obs.players:
                 if player != "Ego":
                     if sim_obs.players[player].state.vx > magic_speed:
-                        new_occupancy = self.calc_big_occupacy(
+                        new_occupancy = self.collision_checker.calc_big_occupacy(
                             sim_obs.players[player].occupancy,
                             sim_obs.players[player].state.x,
                             sim_obs.players[player].state.y,
-                        )  # type: ignore
+                        )
 
                         dyn_obs_current.append(
                             (
-                                sim_obs.players[player].state.x,  # type: ignore
-                                sim_obs.players[player].state.y,  # type: ignore
-                                sim_obs.players[player].state.vx,  # type: ignore
-                                new_occupancy,  # sim_obs.players[player].occupancy
+                                sim_obs.players[player].state.x,
+                                sim_obs.players[player].state.y,
+                                sim_obs.players[player].state.vx,
+                                new_occupancy,
                             )
                         )
 
                     else:
                         dyn_obs_current.append(
                             (
-                                sim_obs.players[player].state.x,  # type: ignore
-                                sim_obs.players[player].state.y,  # type: ignore
-                                sim_obs.players[player].state.vx,  # type: ignore
-                                sim_obs.players[player].occupancy,  # type: ignore
+                                sim_obs.players[player].state.x,
+                                sim_obs.players[player].state.y,
+                                sim_obs.players[player].state.vx,
+                                sim_obs.players[player].occupancy,
                             )
                         )
 
             # create rtree for dynamic obstacles at each level of the graph (i.e. prepare efficient search for collision checking)
-            states_dyn_obs = self.states_other_cars(dyn_obs_current)
+            states_dyn_obs = self.collision_checker.states_other_cars(dyn_obs_current)
             self.count_removed_branches = 0  # note: assume one branch per lane change
             for k in range(weighted_graph.num_goal_nodes):
                 djikstra_solver = Dijkstra(weighted_graph)
@@ -237,7 +252,7 @@ class Pdm4arAgent(Agent):
                     start_node=weighted_graph.start_node, goal_node=weighted_graph.goal_node
                 )
                 # collision checking on shortest path with RTree for every time step
-                if self.has_collision(
+                if self.collision_checker.has_collision(
                     shortest_path=self.shortest_path, states_other_cars=states_dyn_obs, occupancy=current_occupancy
                 ):
                     print("Collision detected. Recomputing shortest path.")
@@ -287,8 +302,8 @@ class Pdm4arAgent(Agent):
                 self.path_node += 1
                 if self.path_node == self.num_steps_path:  # goal node reached
                     self.state = StateMachine.HOLD_LANE
-                    acc = self.abstandhalteassistent(current_state, sim_obs.players)  # type: ignore
-                    ddelta = self.spurhalteassistent(current_state, float(sim_obs.time))  # type: ignore
+                    acc = self.velocity_controller.abstandhalteassistent(current_state, sim_obs.players)
+                    ddelta = self.custom_steer_controller.spurhalteassistent(current_state, float(sim_obs.time))
                     self.freq_counter = 0  # done with lane change -> reset freq_counter
                     return VehicleCommands(acc, ddelta)
                 else:
@@ -309,13 +324,13 @@ class Pdm4arAgent(Agent):
             else:  # stay on current lane for 0.5s and attempt lane change again
                 self.state = StateMachine.ATTEMPT_LANE_CHANGE
 
-            acc = self.abstandhalteassistent(current_state, sim_obs.players)  # type: ignore
-            ddelta = self.spurhalteassistent(current_state, float(sim_obs.time))  # type: ignore
+            acc = self.velocity_controller.abstandhalteassistent(current_state, sim_obs.players)
+            ddelta = self.custom_steer_controller.spurhalteassistent(current_state, float(sim_obs.time))
             return VehicleCommands(acc, ddelta)
 
         if self.state == StateMachine.GOAL_STATE:
-            acc = self.abstandhalteassistent(current_state, sim_obs.players)  # type: ignore
-            ddelta = self.spurhalteassistent(current_state, float(sim_obs.time))  # type: ignore
+            acc = self.velocity_controller.abstandhalteassistent(current_state, sim_obs.players)
+            ddelta = self.custom_steer_controller.spurhalteassistent(current_state, float(sim_obs.time))
             return VehicleCommands(acc, ddelta)
 
     def retrieve_goal_lane_ids(self) -> list:
@@ -486,88 +501,6 @@ class Pdm4arAgent(Agent):
 
         return ddelta
 
-    def retrieve_current_lane_ids(self, lane_id) -> list:
-        current_lane_ids = [lane_id]
-        lanelet = self.lanelet_network.find_lanelet_by_id(current_lane_ids[-1])
-        successor_id = lanelet.successor
-
-        while successor_id:
-            current_lane_ids.append(successor_id[0])
-            successor_id = self.lanelet_network.find_lanelet_by_id(successor_id[0]).successor
-
-        return current_lane_ids
-
-    def abstandhalteassistent(self, current_state: VehicleState, players: frozendict) -> float:
-        player_ahead = None
-        goal_x = self.goal.goal_polygon.centroid.x
-        my_lanelet_id = self.lanelet_network.find_lanelet_by_position([np.array([current_state.x, current_state.y])])
-
-        if my_lanelet_id[0]:
-            current_lane_ids = self.retrieve_current_lane_ids(my_lanelet_id[0][0])
-            for player in players:
-                if player != self.name:
-                    player_lanelet_id = self.lanelet_network.find_lanelet_by_position(
-                        [np.array([players[player].state.x, players[player].state.y])]
-                    )
-                    if not player_lanelet_id[0]:
-                        continue
-                    if player_lanelet_id[0][0] in current_lane_ids:
-                        if np.abs(goal_x - players[player].state.x) < np.abs(
-                            goal_x - current_state.x
-                        ):  # note: has singularity at lane heading of 90 deg
-                            player_ahead = players[player]
-
-        if player_ahead:
-            dist_to_player = math.sqrt(
-                (player_ahead.state.x - current_state.x) ** 2 + (player_ahead.state.y - current_state.y) ** 2
-            )
-            d_ref = self.d_ref_K * player_ahead.state.vx
-            poly_edges = list(player_ahead.occupancy.exterior.coords)
-            l_half_ahead = math.sqrt(
-                (poly_edges[0][0] - player_ahead.state.x) ** 2 + (poly_edges[0][1] - player_ahead.state.y) ** 2
-            )
-            if d_ref < l_half_ahead + 1.5:
-                d_ref = l_half_ahead + 1.5
-
-            e = dist_to_player - d_ref
-            if not self.init_abstand:
-                self.init_abstand = True
-                self.last_e = e
-                return (player_ahead.state.vx / self.T + self.d_ref) * (
-                    self.last_e
-                )  # P-controler for first time step, here last_e is also the current error
-
-            de = (e - self.last_e) / float(self.dt)
-            self.last_e = e
-            K_p = player_ahead.state.vx / self.T + self.d_ref
-
-            return K_p * (self.T * de + e)
-
-        else:
-            # increase/decrease speed if car is too slow/fast (avoid velocity penalty) - else keep speed
-            if current_state.vx > 25:  #
-                return self.vp.acc_limits[0]
-            elif current_state.vx < 5:
-                return self.vp.acc_limits[1]
-            else:
-                return 0.0
-
-    def calc_big_occupacy(self, occupancy: Polygon, x: float, y: float) -> Polygon:
-        # enlarge occupancy polygon to avoid collisions
-        coordinates = list(occupancy.exterior.coords)[:-1]
-        new_coords = []
-        c_coords = [x, y]
-
-        for coords in coordinates:
-            r_ce = [coords[0] - x, coords[1] - y]
-            m = 1.5
-            new_e = [c_coords[0] + m * r_ce[0], c_coords[1] + m * r_ce[1]]
-            new_coords.append(new_e)
-
-        new_occupancy = Polygon(new_coords)
-
-        return new_occupancy
-
     def plot_collisions(self, rtree, lanelet_polygons, shortest_path, states_other_cars, occupancy, graph):
         """
         Plot the shapely.Polygon objects stored in the R-Tree.
@@ -637,7 +570,9 @@ class Pdm4arAgent(Agent):
                 [shortest_path[i][1].x - shortest_path[i - 1][1].x, shortest_path[i][1].y - shortest_path[i - 1][1].y]
             )
             dpsi = shortest_path[i][1].psi - shortest_path[i - 1][1].psi
-            occupancy = self.calc_new_occupancy(current_occupancy=occupancy, delta_pos=delta_pos, dpsi=dpsi)
+            occupancy = self.collision_checker.calc_new_occupancy(
+                current_occupancy=occupancy, delta_pos=delta_pos, dpsi=dpsi
+            )
             x, y = occupancy.exterior.xy
             ax.plot(x, y, linestyle="-", linewidth=1, color="blue")
 
