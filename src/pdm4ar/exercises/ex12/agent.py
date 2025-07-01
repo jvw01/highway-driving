@@ -10,23 +10,18 @@ from dg_commons.sim.models.vehicle import VehicleState
 from decimal import Decimal
 from dataclasses import dataclass
 from decimal import Decimal
-from shapely.geometry import Polygon
-from matplotlib.collections import LineCollection
 from dg_commons.controllers.steer import SteerController
 from dg_commons.controllers.pure_pursuit import PurePursuit
 import numpy as np
-import math
 import enum
-from shapely.affinity import translate, rotate
-from shapely.strtree import STRtree
-import matplotlib.pyplot as plt
 
-from pdm4ar.exercises.ex12.graph import generate_graph
-from pdm4ar.exercises.ex12.motion_primitves import calc_next_state, generate_primat
-from pdm4ar.exercises.ex12.dijkstra import Dijkstra
+from pdm4ar.exercises.ex12.planning.motion_primitves import generate_primat
+from pdm4ar.exercises.ex12.planning.graph import generate_graph
+from pdm4ar.exercises.ex12.planning.dijkstra import Dijkstra
 from pdm4ar.exercises.ex12.planning.collision_checker import CollisionChecker
 from pdm4ar.exercises.ex12.controllers.velocity_controller import VelocityController, VelocityControllerParams
 from pdm4ar.exercises.ex12.controllers.steering_controller import CustomSteerController, SteeringControllerParams
+from pdm4ar.exercises.ex12.state_machine.lane_change import LaneChangePlanner
 
 class StateMachine(enum.Enum):
     INITIALIZATION = 1
@@ -42,9 +37,11 @@ class Pdm4arAgentParams:
 
 
 class Pdm4arAgent(Agent):
-    """This is the PDM4AR agent.
+    """
+    This is the PDM4AR agent.
     Do *NOT* modify the naming of the existing methods and the input/output types.
-    Feel free to add additional methods, objects and functions that help you to solve the task"""
+    Feel free to add additional methods, objects and functions that help you to solve the task
+    """
 
     name: PlayerName
     goal: PlanningGoal
@@ -111,6 +108,15 @@ class Pdm4arAgent(Agent):
             lanelet_network=self.lanelet_network,
         )
 
+        # initialize lane change planner
+        self.lane_change_planner = LaneChangePlanner(
+            vp=self.vp,
+            vg=self.vg,
+            dt_integral=self.dt_integral,
+            scaling_dt=self.scaling_dt,
+            half_lane_width=self.half_lane_width,
+        )
+
     def get_commands(self, sim_obs: SimObservations) -> VehicleCommands:
         """This method is called by the simulator every dt_commands seconds (0.1s by default).
         Do not modify the signature of this method.
@@ -139,7 +145,7 @@ class Pdm4arAgent(Agent):
 
         if self.state == StateMachine.ATTEMPT_LANE_CHANGE:
             # need 4 motion primitives to change lanes - calculate the time horizon for one motion primitive
-            self.time_horizon, ddelta = self.calc_time_horizon_and_ddelta(current_state=current_state)
+            self.time_horizon, ddelta = self.lane_change_planner.calc_time_horizon_and_ddelta(current_state=current_state)
             self.n_steps = int(self.time_horizon / self.dt_integral)
             self.delta_steer = ddelta * self.time_horizon
 
@@ -342,250 +348,3 @@ class Pdm4arAgent(Agent):
             predecessor_id = self.lanelet_network.find_lanelet_by_id(predecessor_id[0]).predecessor
 
         return goal_lane_ids
-
-    def calc_time_horizon_and_ddelta(self, current_state: VehicleState) -> tuple[float, float]:
-        # heurisitic approach: in first motion primitive with delta_max, the car drives approximately a sixth of the lane width in y' direction
-        delta_y = self.half_lane_width * (1 / 3)
-        n_steps = 0
-        init_state_y = current_state.y
-        next_state = VehicleState(
-            x=current_state.x,
-            y=current_state.y,
-            psi=0,  # to make calculation easier - it does not matter for this calculation whether the road is at an angle
-            vx=current_state.vx,
-            delta=current_state.delta,
-        )
-
-        while (np.abs(next_state.y - init_state_y)) < delta_y:
-            n_steps += 1
-            next_state = calc_next_state(
-                next_state, VehicleCommands(acc=0, ddelta=self.vp.ddelta_max), self.dt_integral, self.vp, self.vg
-            )
-
-        goal_state_y = next_state.y
-        time_horizon = np.ceil(n_steps * self.dt_integral * 10) / 10  # round to nearest multiple of 0.1
-
-        # calculate ddelta with new time horizon
-        ddelta = self.vp.ddelta_max / 2  # start with ddelta_max / 2 as init guess for correct ddelta
-        ddelta_interval = np.array([0, self.vp.ddelta_max])
-        n_steps = int(time_horizon / self.dt_integral)
-        init_state_y = current_state.y
-        next_state = VehicleState(
-            x=current_state.x,
-            y=current_state.y,
-            psi=0,  # to make calculation easier - it does not matter for this calculation whether the road is at an angle
-            vx=current_state.vx,
-            delta=current_state.delta,
-        )
-
-        calc_goal_state_y = current_state.y
-        while np.abs(goal_state_y - calc_goal_state_y) > 1e-2:
-            for _ in range(n_steps):
-                next_state = calc_next_state(
-                    next_state, VehicleCommands(acc=0, ddelta=ddelta), self.dt_integral, self.vp, self.vg
-                )
-
-            if goal_state_y > 0:
-                if goal_state_y - next_state.y > 0:
-                    ddelta_interval = np.array([ddelta, ddelta_interval[1]])
-                    ddelta = np.mean(ddelta_interval)
-                else:
-                    ddelta_interval = np.array([ddelta_interval[0], ddelta])
-                    ddelta = np.mean(ddelta_interval)
-            else:
-                if np.abs(goal_state_y) - np.abs(next_state.y) > 0:
-                    ddelta_interval = np.array([ddelta_interval[0], ddelta])
-                    ddelta = np.mean(ddelta_interval)
-                else:
-                    ddelta_interval = np.array([ddelta, ddelta_interval[1]])
-                    ddelta = np.mean(ddelta_interval)
-
-            calc_goal_state_y = next_state.y
-            next_state = VehicleState(
-                x=current_state.x,
-                y=current_state.y,
-                psi=0,  # to make calculation easier - it does not matter for this calculation whether the road is at an angle
-                vx=current_state.vx,
-                delta=current_state.delta,
-            )
-        return (time_horizon, ddelta)
-
-    def states_other_cars(self, dyn_obs_current: list) -> list:
-        states_other_cars = []
-        for i in range(
-            1, self.depth + self.steps_lane_change
-        ):  # note: start at 1 because car does not collide in init state
-            states_i = []
-            for dyn_obs in dyn_obs_current:
-                vx = dyn_obs[2]
-                s = vx * self.time_horizon  # note: other cars do not change lanes
-                x_off = i * s * math.cos(self.lane_orientation)
-                y_off = i * s * math.sin(self.lane_orientation)
-                occupancy = dyn_obs[3]
-                new_occupancy = translate(occupancy, xoff=x_off, yoff=y_off)
-                states_i.append(new_occupancy)
-            strtree = STRtree(states_i)
-            states_other_cars.append(strtree)
-
-        return states_other_cars
-
-    def calc_new_occupancy(self, current_occupancy: Polygon, delta_pos: np.ndarray, dpsi: float) -> Polygon:
-        translated_occupancy = translate(current_occupancy, xoff=delta_pos[0], yoff=delta_pos[1])
-        return rotate(translated_occupancy, angle=dpsi, origin=translated_occupancy.centroid, use_radians=True)
-
-    def has_collision(self, shortest_path: list, states_other_cars: list, occupancy: Polygon) -> bool:
-        for i in range(1, len(shortest_path) - 1):  # exclude start and goal node, only check
-            strtree = states_other_cars[i - 1]
-            delta_pos = np.array(
-                [shortest_path[i][1].x - shortest_path[i - 1][1].x, shortest_path[i][1].y - shortest_path[i - 1][1].y]
-            )
-            dpsi = shortest_path[i][1].psi - shortest_path[i - 1][1].psi
-            occupancy = self.calc_new_occupancy(current_occupancy=occupancy, delta_pos=delta_pos, dpsi=dpsi)
-
-            # check for collision with each obstacle
-            candidate_indices = strtree.query(occupancy)
-            for idx in candidate_indices:
-                obstacle = strtree.geometries[idx]
-                if occupancy.intersects(obstacle):
-                    return True
-        return False
-
-    def spurhalteassistent(self, current_state: VehicleState, t: float) -> float:
-        cur_lanelet_id = self.lanelet_network.find_lanelet_by_position([np.array([current_state.x, current_state.y])])
-
-        if not cur_lanelet_id[0]:
-            print("No lanelet found")
-            return 0.0
-
-        cur_lanelet = self.lanelet_network._lanelets[cur_lanelet_id[0][0]]
-        center_vertices = cur_lanelet.center_vertices
-        lanelet_heading = math.atan2(
-            center_vertices[-1][1] - center_vertices[0][1], center_vertices[-1][0] - center_vertices[0][0]
-        )
-        line_vec = center_vertices[-1] - center_vertices[0]
-        normal_vec = np.array([-line_vec[1], line_vec[0]])
-        normal_vec = normal_vec / np.linalg.norm(normal_vec)
-        dist = np.dot(
-            normal_vec, np.array([current_state.x, current_state.y]) - center_vertices[0]
-        )  # should already have correct sign
-        dpsi = current_state.psi - lanelet_heading
-
-        if not self.init_control:
-            self.init_control = True
-            self.last_dist = dist
-            self.last_dpsi = dpsi
-            self.last_delta = current_state.delta
-            return -1 * dpsi - 0.1 * dist - 2 * current_state.delta
-
-        d_dist = (dist - self.last_dist) / float(self.dt)
-        d_dpsi = (dpsi - self.last_dpsi) / float(self.dt)
-        d_delta = (current_state.delta - self.last_delta) / float(self.dt)
-        self.last_dist = dist
-        self.last_dpsi = dpsi
-        self.last_delta = current_state.delta
-
-        ddelta = (
-            -self.K_psi * dpsi
-            - self.K_d_psi * d_dpsi
-            - self.K_dist * dist
-            - self.K_d_dist * d_dist
-            - self.K_delta * current_state.delta
-            - self.K_d_delta * d_delta
-        )
-
-        if abs(dist) < 0.05 and abs(current_state.delta) < 0.01:
-            self.steer_controller.update_measurement(measurement=current_state.delta)
-            self.steer_controller.update_reference(reference=0)
-            ddelta = self.steer_controller.get_control(t)
-            return min(max(ddelta, -self.vp.ddelta_max), self.vp.ddelta_max)
-
-        return ddelta
-
-    def plot_collisions(self, rtree, lanelet_polygons, shortest_path, states_other_cars, occupancy, graph):
-        """
-        Plot the shapely.Polygon objects stored in the R-Tree.
-        :param rtree_idx: R-Tree index containing the polygons.
-        :param title: Title of the plot.
-        """
-        plt.figure(figsize=(30, 25), dpi=250)
-        ax = plt.gca()
-
-        # Collect all node coordinates
-        node_coords = []
-        edge_coords = []
-
-        for parent in graph.nodes:
-            if parent[0] == -1:  # Skip the virtual goal node
-                continue
-            parent_x, parent_y = parent[1].x, parent[1].y
-            node_coords.append((parent_x, parent_y))
-
-            for child in graph.successors(parent):
-                if child[0] == -1:  # Skip edges to the virtual goal node
-                    continue
-                child_x, child_y = child[1].x, child[1].y
-                edge_coords.append([(parent_x, parent_y), (child_x, child_y)])
-
-        # Plot all nodes at once
-        node_coords = np.array(node_coords)
-        plt.scatter(node_coords[:, 0], node_coords[:, 1], color="blue", s=1)
-
-        # Plot all edges at once using LineCollection
-        edge_collection = LineCollection(edge_coords, colors="blue", linewidths=0.3)
-        ax.add_collection(edge_collection)
-
-        # init occupancy other cars
-        for car in states_other_cars:
-            x, y = car[3].exterior.xy
-            ax.plot(x, y, linestyle="-", linewidth=1, color="red")
-
-        # Iterate through the R-Tree and plot each polygon
-        cmap = plt.cm.get_cmap("tab20")
-        for k, time_instance in enumerate(rtree):
-            if k + 1 == len(shortest_path) - 1:  # exclude start and goal node
-                break
-            for i, polygon in enumerate(time_instance.geometries):
-                x, y = polygon.exterior.xy
-                color = cmap(i % cmap.N)
-                ax.plot(x, y, linestyle="-", linewidth=1, color=color)
-
-        # Plot the shortest path
-        if shortest_path:
-            path_coords = []
-            for node in shortest_path:
-                if node[0] == -1:  # Skip the virtual goal node
-                    continue
-                node_x, node_y = node[1].x, node[1].y
-                path_coords.append((node_x, node_y))
-
-            path_coords = np.array(path_coords)
-            plt.plot(path_coords[:, 0], path_coords[:, 1], color="red", linewidth=1.5, marker="o", markersize=2)
-
-        # init occupancy my car
-        x, y = occupancy.exterior.xy
-        ax.plot(x, y, linestyle="-", linewidth=1, color="red")
-
-        for i in range(1, len(shortest_path) - 1):  # exclude start and goal node
-            delta_pos = np.array(
-                [shortest_path[i][1].x - shortest_path[i - 1][1].x, shortest_path[i][1].y - shortest_path[i - 1][1].y]
-            )
-            dpsi = shortest_path[i][1].psi - shortest_path[i - 1][1].psi
-            occupancy = self.collision_checker.calc_new_occupancy(
-                current_occupancy=occupancy, delta_pos=delta_pos, dpsi=dpsi
-            )
-            x, y = occupancy.exterior.xy
-            ax.plot(x, y, linestyle="-", linewidth=1, color="blue")
-
-        # Plot static obstacles (from on_episode_init)
-        for lanelet in lanelet_polygons:
-            x, y = lanelet.shapely_object.exterior.xy
-            plt.plot(x, y, linestyle="-", linewidth=0.8, color="darkorchid")
-
-        ax.set_aspect("equal", adjustable="box")
-
-        output_dir = "/tmp"
-        os.makedirs(output_dir, exist_ok=True)
-        filename = os.path.join(output_dir, "plot_collisions.png")
-        plt.savefig(filename, bbox_inches="tight")  # Save the plot with tight bounding box
-        plt.close()
-        print(f"Graph saved to {filename}")
