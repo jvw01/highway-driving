@@ -61,7 +61,7 @@ The exercise evaluates agent performance across multiple scenarios with increasi
 
 | Scenario 1.1 | Scenario 1.2 |
 |:----------:|:----------:|
-| <video src="videos/Evaluation-Final24-1-scenario1-EpisodeVisualisation-figure1-Animation.mp4" controls width="400"></video> | <video src="videos/Evaluation-Final24-2-scenario1-EpisodeVisualisation-figure1-Animation.mp4" controls width="400"></video> |
+| ![1.1](videos/Evaluation-Final24-1-scenario1-EpisodeVisualisation-figure1-Animation.gif) | ![1.2](videos/Evaluation-Final24-1-scenario2-EpisodeVisualisation-figure1-Animation.gif) |
 
 *Description: Basic lane following and lane changing in light traffic conditions.*
 
@@ -69,7 +69,7 @@ The exercise evaluates agent performance across multiple scenarios with increasi
 
 | Scenario 2.1 | Scenario 2.2 |
 |:----------:|:----------:|
-| <video src="videos/Evaluation-Final24-1-scenario2-EpisodeVisualisation-figure1-Animation.mp4" controls width="400"></video> | <video src="videos/Evaluation-Final24-2-scenario2-EpisodeVisualisation-figure1-Animation.mp4" controls width="400"></video> |
+| ![2.1](videos/Evaluation-Final24-2-scenario1-EpisodeVisualisation-figure1-Animation.gif) | ![2.2](videos/Evaluation-Final24-2-scenario2-EpisodeVisualisation-figure1-Animation.gif) |
 
 *Description: Advanced scenarios with dense traffic, requiring strategic lane changes.*
 
@@ -77,7 +77,7 @@ The exercise evaluates agent performance across multiple scenarios with increasi
 
 | Scenario 3.1 |
 |:----------:|
-| <video src="videos/Evaluation-Final24-3-scenario1-EpisodeVisualisation-figure1-Animation.mp4" controls width="400"></video> |
+| ![3.1](videos/Evaluation-Final24-3-scenario1-EpisodeVisualisation-figure1-Animation.gif) |
 
 *Description: Difficult scenario with traffic jam.*
 
