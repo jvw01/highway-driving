@@ -1,10 +1,20 @@
 from dg_commons.sim.models.vehicle import VehicleState, VehicleCommands
+from dg_commons.sim.models.vehicle_structures import VehicleGeometry
+from dg_commons.sim.models.vehicle_utils import VehicleParameters
+
 import numpy as np
 from pdm4ar.exercises.ex12.planning.motion_primitves import calc_next_state
 
-
 class LaneChangePlanner:
-    def __init__(self, vp, vg, dt_integral, scaling_dt, half_lane_width):
+
+    def __init__(
+        self,
+        vp: VehicleParameters,
+        vg: VehicleGeometry,
+        dt_integral: float,
+        scaling_dt: float,
+        half_lane_width: float,
+    ):
         self.vp = vp
         self.vg = vg
         self.dt_integral = dt_integral
@@ -12,6 +22,14 @@ class LaneChangePlanner:
         self.half_lane_width = half_lane_width
 
     def calc_time_horizon_and_ddelta(self, current_state: VehicleState) -> tuple[float, float]:
+        """
+        Calculate the time horizon and ddelta for the lane change maneuver.
+        The time horizon is calculated based on the distance the car drives in one motion primitive.
+        The ddelta is calculated based on the distance the car drives in one motion primitive and the desired lane change distance.
+        The desired lane change distance is approximately one third of the lane width in the y' direction.
+        The ddelta is calculated iteratively until the desired lane change distance is reached within a tolerance of 1e-2.
+        """
+
         # heurisitic approach: in first motion primitive with delta_max, the car drives approximately a sixth of the lane width in y' direction
         delta_y = self.half_lane_width * (1 / 3)
         n_steps = 0
@@ -50,7 +68,11 @@ class LaneChangePlanner:
         while np.abs(goal_state_y - calc_goal_state_y) > 1e-2:
             for _ in range(n_steps):
                 next_state = calc_next_state(
-                    next_state, VehicleCommands(acc=0, ddelta=ddelta), self.dt_integral, self.vp, self.vg
+                    next_state,
+                    VehicleCommands(acc=0, ddelta=ddelta),
+                    self.dt_integral,
+                    self.vp,
+                    self.vg,
                 )
 
             if goal_state_y > 0:

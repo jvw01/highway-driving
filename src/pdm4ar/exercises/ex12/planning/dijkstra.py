@@ -26,6 +26,8 @@ class InformedGraphSearch(ABC):
 @dataclass
 class Dijkstra(InformedGraphSearch):
     def path(self, start_node: tuple, goal_node: tuple) -> Path:
+        """Find the shortest path from start_node to goal_node using Dijkstra's algorithm."""
+
         weighted_graph = self.weighted_graph
         heap: list[tuple[float, tuple]] = [(0, start_node)]  # (total_cost, node) it's important that cost comes first s.t. heapq can prioritize correctly
         cost_to_reach: dict[tuple, float] = {start_node: 0}  # node: cost. Is the cost for the path from the start to the node
@@ -33,7 +35,7 @@ class Dijkstra(InformedGraphSearch):
         already_expanded_nodes: set[tuple] = set()
 
         while heap: # while heap is not empty
-            current_total_cost, root = heapq.heappop(heap)
+            _, root = heapq.heappop(heap)
 
             if root in already_expanded_nodes:
                 continue # Skip already processed nodes

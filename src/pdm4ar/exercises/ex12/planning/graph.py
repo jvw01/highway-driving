@@ -54,6 +54,11 @@ def generate_graph(
     goal_id: list,
     steps_lane_change: int,
 ) -> WeightedGraph:
+    """
+    Generates a directed graph for the lane change procedure.
+    The graph is built by moving all end states of the trajectory by the distance the car drives in one time step
+    and adding the control commands for each state.
+    """
 
     graph = DiGraph()
 
@@ -101,9 +106,7 @@ def generate_graph(
                 graph.add_edge(
                     previous_node,
                     child,
-                    weight=cost_function(
-                        current_node=previous_node, lanelet_network=lanelet_network, lanelet_id=lanelet_id[0][0]
-                    ),
+                    weight=cost_function(current_node=previous_node),
                 )
 
                 # extract node where we attach the next lane change procedure
@@ -148,9 +151,14 @@ def generate_graph(
     )
 
 
-def cost_function(
-    current_node: tuple, lanelet_network: LaneletNetwork, lanelet_id: int
-) -> float:  # add virtual goal node
+def cost_function(current_node: tuple) -> float:  # add virtual goal node
+    """
+    Cost function for the Dijkstra algorithm.
+    This function calculates the cost for a given node in the graph.
+    The cost is based on the heuristic cost, which is defined as the level of the node
+    (increases with int steps from the starting node).
+    """
+
     # takes the level of the node as cost (increases with int steps from the starting node)
     heuristic_cost = (current_node[0] + 1) if current_node[2] else 0.0
     heuristic_weighting_factor = 1.0

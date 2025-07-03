@@ -1,16 +1,25 @@
 import matplotlib.pyplot as plt
+from pdm4ar.exercises.ex12.planning.collision_checker import CollisionChecker
 from matplotlib.collections import LineCollection
 import numpy as np
 import os
 
 class VisualizationUtils:
-    @staticmethod
-    def plot_collisions(rtree, lanelet_polygons, shortest_path, states_other_cars, occupancy, graph):
+
+    def __init__(self, collision_checker: CollisionChecker):
+        """
+        Initialize the VisualizationUtils with a collision checker.
+        """
+
+        self.collision_checker = collision_checker
+
+    def plot_collisions(self, rtree, lanelet_polygons, shortest_path, states_other_cars, occupancy, graph):
         """
         Plot the shapely.Polygon objects stored in the R-Tree.
         :param rtree_idx: R-Tree index containing the polygons.
         :param title: Title of the plot.
         """
+
         plt.figure(figsize=(30, 25), dpi=250)
         ax = plt.gca()
 

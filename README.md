@@ -1,6 +1,7 @@
 # PDM4AR Highway Driving Exercise
 
-This repository contains the implementation for Exercise 12 of the Planning and Decision Making for Autonomous Robots (PDM4AR) course. The exercise focuses on autonomous highway driving scenarios with lane changing, collision avoidance, and goal-oriented navigation.
+This repository contains the implementation for the final exercise of the Planning and Decision Making for Autonomous Robots (PDM4AR) course.
+The exercise focuses on autonomous highway driving scenarios with lane changing, collision avoidance, and goal-oriented navigation.
 
 ## Overview
 
@@ -41,45 +42,58 @@ python src/pdm4ar/main.py --exercise 12
 src/pdm4ar/
 ├── exercises/
 │   └── ex12/
-│       ├── agent.py              # Main agent implementation
-│       ├── motion_primitives.py  # Vehicle motion models
-│       ├── graph.py              # Path planning graph structures
-│       └── dijkstra.py           # Dijkstra search algorithm
-├── exercises_def/
-│   └── ex12/
-│       ├── ex12.py               # Exercise configuration
-│       ├── sim_context.py        # Simulation setup
-│       └── perf_metrics.py       # Performance evaluation
-└── main.py                       # Entry point
+│       ├── agent.py  # agent coordinator (state machine)
+│       ├── __init__.py
+│       │
+│       ├── controllers/
+│       │   ├── __init__.py
+│       │   ├── velocity_controller.py  # controller for safe following
+│       │   └── steering_controller.py  # controller for lane keeping
+│       │
+│       ├── planning/
+│       │   ├── __init__.py
+│       │   ├── motion_primitives.py  # motion primitive implementation
+│       │   ├── motion_primitive_manager.py  # motion primitive generation
+│       │   ├── lane_change.py  # calculate time horizon and ddelta for lane change maneuver
+│       │   ├── collision_checker.py  # collision detection and avoidance
+│       │   ├── graph.py  # graph generation for shortest path search
+│       │   └── dijkstra.py  # Dijkstra's algorithm
+│       │
+│       └── utils/
+│           ├── __init__.py
+│           └── visualization.py  # Debug plotting and visualization
+|
+└── main.py  # Entry point
 ```
 
 ## Performance Evaluation
 
-The exercise evaluates agent performance across multiple scenarios with increasing difficulty:
+The exercise evaluates agent performance across multiple scenarios with increasing difficulty.
+This implementation manages to pass both the public and private test cases in the course "Planning and Decision Making for Autonomous Robots".
 
 ### Scenario 1: Basic Highway Navigation
+
+Basic lane following and lane changing in light traffic conditions.
 
 | Scenario 1.1 | Scenario 1.2 |
 |:----------:|:----------:|
 | ![1.1](videos/Evaluation-Final24-1-scenario1-EpisodeVisualisation-figure1-Animation.gif) | ![1.2](videos/Evaluation-Final24-1-scenario2-EpisodeVisualisation-figure1-Animation.gif) |
 
-*Description: Basic lane following and lane changing in light traffic conditions.*
-
 ### Scenario 2: Complex Traffic Situations
+
+Advanced scenarios with dense traffic, requiring strategic lane changes.
 
 | Scenario 2.1 | Scenario 2.2 |
 |:----------:|:----------:|
 | ![2.1](videos/Evaluation-Final24-2-scenario1-EpisodeVisualisation-figure1-Animation.gif) | ![2.2](videos/Evaluation-Final24-2-scenario2-EpisodeVisualisation-figure1-Animation.gif) |
 
-*Description: Advanced scenarios with dense traffic, requiring strategic lane changes.*
-
 ### Scenario 3: Emergency Situations
 
-| Scenario 3.1 |
-|:----------:|
-| ![3.1](videos/Evaluation-Final24-3-scenario1-EpisodeVisualisation-figure1-Animation.gif) |
+Difficult scenario. Lane changing in traffic jam.
 
-*Description: Difficult scenario with traffic jam.*
+| Scenario 3 |
+|:----------:|
+| ![3](videos/Evaluation-Final24-3-scenario1-EpisodeVisualisation-figure1-Animation.gif) |
 
 ## Evaluation Metrics
 

@@ -21,8 +21,15 @@ class VelocityController:
         self.dt = dt
         self.init_abstand = False
         self.last_e = 0.0
-    
+
     def abstandhalteassistent(self, current_state: VehicleState, players: frozendict) -> float:
+        """
+        Velocity controller that maintains a safe distance to the vehicle ahead.
+        If no vehicle is ahead, it adjusts the speed to avoid velocity penalties.
+        If a vehicle is ahead, it calculates the distance to the vehicle and adjusts the speed accordingly.
+        The controller uses a proportional control strategy based on the distance to the vehicle ahead.
+        """
+
         player_ahead = None
         goal_x = self.goal.goal_polygon.centroid.x
         my_lanelet_id = self.lanelet_network.find_lanelet_by_position([np.array([current_state.x, current_state.y])])
@@ -77,8 +84,12 @@ class VelocityController:
             else:
                 return 0.0
 
-    
     def retrieve_current_lane_ids(self, lane_id) -> list:
+        """
+        Retrieve the current lane IDs starting from the given lane ID.
+        A lane is a concatenation of multiple lanelets.
+        """
+
         current_lane_ids = [lane_id]
         lanelet = self.lanelet_network.find_lanelet_by_id(current_lane_ids[-1])
         successor_id = lanelet.successor

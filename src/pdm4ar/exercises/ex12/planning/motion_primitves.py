@@ -10,7 +10,8 @@ from dg_commons.sim.models.vehicle_structures import VehicleGeometry
 from dg_commons.sim.models.vehicle_utils import VehicleParameters
 
 
-# note: the code for the calculation of the next state / motion primitives is taken from the dg.commons library
+# Note: the code for the calculation of the next state / motion primitives is taken from the dg.commons library
+
 def generate_primat(
     x0: VehicleState,
     steer_range: float,
@@ -25,6 +26,7 @@ def generate_primat(
     """
     Reimplement method mpg.generate(x) to generate motion primitives specifically for our problem.
     """
+
     end_states_traj = []
     controls_traj = []
 
@@ -111,8 +113,11 @@ def generate_primat(
     return end_states_traj, controls_traj
 
 def calc_next_state(x0: VehicleState, u: VehicleCommands, dt: float, vp, vg) -> VehicleState:
-    """Perform Euler forward integration to propagate state using actions for time dt.
-    This method is very inaccurate for integration steps above 0.1[s]"""
+    """
+    Perform Euler forward integration to propagate state using actions for time dt.
+    This method is very inaccurate for integration steps above 0.1[s].
+    """
+
     # input constraints
     acc = float(np.clip(u.acc, vp.acc_limits[0], vp.acc_limits[1]))
     ddelta = float(np.clip(u.ddelta, -vp.ddelta_max, vp.ddelta_max))
@@ -128,7 +133,7 @@ def calc_next_state(x0: VehicleState, u: VehicleCommands, dt: float, vp, vg) -> 
     return new_state
 
 def dynamics(x0: VehicleState, u: VehicleCommands, vg) -> VehicleState:
-    """Get rate of change of states for given control inputs"""
+    """Get rate of change of states for given control inputs."""
 
     dx = x0.vx
     dtheta = dx * math.tan(x0.delta) / vg.wheelbase

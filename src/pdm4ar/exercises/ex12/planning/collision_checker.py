@@ -4,8 +4,8 @@ from shapely.affinity import translate, rotate
 import numpy as np
 import math
 
-class CollisionChecker:
 
+class CollisionChecker:
     def states_other_cars(
         self,
         dyn_obs_current: list,
@@ -14,6 +14,10 @@ class CollisionChecker:
         depth: int,
         steps_lane_change: int,
     ) -> list:
+        """
+        Calculate the states of other cars in the lane for collision checking.
+        """
+
         states_other_cars = []
         for i in range(
             1, depth + steps_lane_change
@@ -33,10 +37,18 @@ class CollisionChecker:
         return states_other_cars
 
     def calc_new_occupancy(self, current_occupancy: Polygon, delta_pos: np.ndarray, dpsi: float) -> Polygon:
+        """Calculate the new occupancy polygon based on the current occupancy, delta position, and change in orientation."""
+
         translated_occupancy = translate(current_occupancy, xoff=delta_pos[0], yoff=delta_pos[1])
         return rotate(translated_occupancy, angle=dpsi, origin=translated_occupancy.centroid, use_radians=True)
 
     def has_collision(self, shortest_path: list, states_other_cars: list, occupancy: Polygon) -> bool:
+        """
+        Check if the shortest path collides with any of the obstacles in the states of other cars.
+        The function iterates through the path, excluding the start and goal nodes, and checks for
+        collisions with the occupancy polygons of other cars.
+        """
+
         for i in range(1, len(shortest_path) - 1):  # exclude start and goal node, only check
             strtree = states_other_cars[i - 1]
             delta_pos = np.array(
@@ -54,6 +66,11 @@ class CollisionChecker:
         return False
 
     def calc_big_occupacy(self, occupancy: Polygon, x: float, y: float) -> Polygon:
+        """
+        Calculate a larger occupancy polygon by enlarging the original occupancy polygon.
+        This is done to avoid collisions by creating a buffer around the occupancy polygon.
+        """
+
         # enlarge occupancy polygon to avoid collisions
         coordinates = list(occupancy.exterior.coords)[:-1]
         new_coords = []

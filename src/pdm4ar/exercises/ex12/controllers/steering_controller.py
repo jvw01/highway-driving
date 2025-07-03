@@ -24,8 +24,15 @@ class CustomSteerController:
         self.last_dpsi = 0.0
         self.last_dist = 0.0
         self.last_delta = 0.0
-    
+
     def spurhalteassistent(self, current_state: VehicleState, t: float) -> float:
+        """
+        Custom steering controller to keep the vehicle in the lane.
+        This controller calculates the steering angle based on the vehicle's current state and the lanelet network.
+        It uses the vehicle's position and heading to determine the distance to the lane center and the heading error.
+        The controller applies a PD-like control strategy to adjust the steering angle.
+        """
+
         cur_lanelet_id = self.lanelet_network.find_lanelet_by_position([np.array([current_state.x, current_state.y])])
 
         if not cur_lanelet_id[0]:

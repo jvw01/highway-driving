@@ -12,7 +12,7 @@ class MotionPrimitiveManager:
         self.vg = vg
         self.dt_integral = dt_integral
         self.scaling_dt = scaling_dt
-    
+
     def generate_control_inputs(
         self,
         current_state: VehicleState, 
@@ -22,14 +22,15 @@ class MotionPrimitiveManager:
         steps_lane_change: int,
         n_steps: int,
     ) -> Tuple[List[List[VehicleState]], List[List[VehicleCommands]]]:
-        """Generate motion primitives for lane change maneuver"""
+        """Generate motion primitives for lane change maneuver."""
+
         end_states = []
         control_inputs = []
         state = current_state
 
         for i in range(steps_lane_change):
             case = 0 if i == 0 else 2
-            
+
             end_state, control_input = generate_primat(
                 x0=state,
                 steer_range=delta_steer,
@@ -52,10 +53,10 @@ class MotionPrimitiveManager:
             state = self._calculate_next_state(current_state, end_state[-1], lane_orientation)
 
         return end_states, control_inputs
-    
+
     def _calculate_next_state(self, current_state: VehicleState, end_state: VehicleState, lane_orientation: float) -> VehicleState:
-        """Calculate the next starting state for primitive generation"""
-        # Move the state transformation logic here
+        """Calculate the next starting state for primitive generation."""
+
         dx = end_state.x - current_state.x
         dy = end_state.y - current_state.y
         dpsi = end_state.psi - current_state.psi

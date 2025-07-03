@@ -1,4 +1,7 @@
-from dataclasses import dataclass
+from decimal import Decimal
+import enum
+import numpy as np
+
 from dg_commons import PlayerName
 from dg_commons.sim.goals import PlanningGoal
 from dg_commons.sim import SimObservations, InitSimObservations
@@ -6,13 +9,7 @@ from dg_commons.sim.agents import Agent
 from dg_commons.sim.models.vehicle import VehicleCommands
 from dg_commons.sim.models.vehicle_structures import VehicleGeometry
 from dg_commons.sim.models.vehicle_utils import VehicleParameters
-from decimal import Decimal
-from dataclasses import dataclass
-from decimal import Decimal
 from dg_commons.controllers.steer import SteerController
-from dg_commons.controllers.pure_pursuit import PurePursuit
-import numpy as np
-import enum
 
 from pdm4ar.exercises.ex12.planning.graph import generate_graph
 from pdm4ar.exercises.ex12.planning.dijkstra import Dijkstra
@@ -21,6 +18,7 @@ from pdm4ar.exercises.ex12.planning.motion_primitives_manager import MotionPrimi
 from pdm4ar.exercises.ex12.controllers.velocity_controller import VelocityController, VelocityControllerParams
 from pdm4ar.exercises.ex12.controllers.steering_controller import CustomSteerController, SteeringControllerParams
 from pdm4ar.exercises.ex12.planning.lane_change import LaneChangePlanner
+
 
 class StateMachine(enum.Enum):
     INITIALIZATION = 1
@@ -42,19 +40,19 @@ class Pdm4arAgent(Agent):
     vg: VehicleGeometry
     vp: VehicleParameters
     dt: Decimal
-    lane_width: float
 
-    pure_pursuit: PurePursuit
     steer_controller: SteerController
-    last_dpsi: float
-    last_dist: float
-    last_delta: float
-    init_control: bool = False
+    velocity_controller: VelocityController
+    custom_steer_controller: CustomSteerController
+    lane_change_planner: LaneChangePlanner
+    motion_primitive_manager: MotionPrimitiveManager
+    collision_checker: CollisionChecker
 
     def on_episode_init(self, init_obs: InitSimObservations):
         """
         This method is called by the simulator only at the beginning of each simulation.
         Do not modify the signature of this method.
+        It initializes the agent with the initial observations from the simulation.
         """
 
         self.name = init_obs.my_name
@@ -67,6 +65,15 @@ class Pdm4arAgent(Agent):
         self.goal_id = init_obs.dg_scenario.lanelet_network.find_lanelet_by_position(
             [init_obs.goal.ref_lane.control_points[1].q.p]
         )[0][0]
+
+        self.lane_orientation = None
+        self.goal_lane = None
+        self.time_horizon = None
+        self.n_steps = None
+        self.delta_steer = None
+        self.count_removed_branches = None
+        self.path_node = None
+        self.num_steps_path = None
 
         self.state = StateMachine.INITIALIZATION
         self.goal_lane_ids = self.retrieve_goal_lane_ids()
@@ -123,6 +130,8 @@ class Pdm4arAgent(Agent):
         """
         This method is called by the simulator every dt_commands seconds (0.1s by default).
         Do not modify the signature of this method.
+        It returns the vehicle commands for the current simulation step.
+        The logic of the agent is implemented in this method in form of a state machine.
         """
 
         current_state = sim_obs.players["Ego"].state
@@ -143,6 +152,12 @@ class Pdm4arAgent(Agent):
             return self.handle_goal_state(current_state, sim_obs)
 
     def handle_init_state(self, current_state, sim_obs):
+        """
+        This method is called during the first simulation step to determine whether the goal lane
+        is to the left or right of the current vehicle position.
+        In addition, it establishes the lane orientation.
+        """
+
         self.lane_orientation = sim_obs.players[
             "Ego"
         ].state.psi  # assuming that lane orientation == initial orientation vehicle
@@ -156,6 +171,15 @@ class Pdm4arAgent(Agent):
         self.state = StateMachine.ATTEMPT_LANE_CHANGE
 
     def handle_attempt_lane_change_state(self, current_state, sim_obs) -> VehicleCommands:
+        """
+        Handle the ATTEMPT_LANE_CHANGE state of the agent.
+        In this state, the agent attempts to change lanes by calculating the shortest path
+        to the goal lane using Dijkstra's algorithm.
+        The agent generates motion primitives for the lane change and checks for collisions with dynamic obstacles.
+        If the shortest path is found, the agent switches to the EXECUTE_LANE_CHANGE state.
+        If no path is found, the agent switches to the HOLD_LANE state.
+        """
+
         # need 4 motion primitives to change lanes - calculate the time horizon for one motion primitive
         self.time_horizon, ddelta = self.lane_change_planner.calc_time_horizon_and_ddelta(current_state=current_state)
         self.n_steps = int(self.time_horizon / self.dt_integral)
@@ -206,6 +230,13 @@ class Pdm4arAgent(Agent):
             self.state = StateMachine.HOLD_LANE
 
     def handle_execute_lane_change_state(self, current_state, sim_obs) -> VehicleCommands:
+        """
+        Handle the EXECUTE_LANE_CHANGE state of the agent.
+        In this state, the agent follows the shortest path computed by Dijkstra's algorithm.
+        The agent executes the lane change by following the control inputs of the shortest path.
+        The agent remains in this state until the next graph node is reached.
+        """
+
         idx = int(self.freq_counter % (self.n_steps / self.scaling_dt))
 
         # remain in EXECUTE_LANE_CHANGE state as we are inbetween graph nodes
@@ -233,6 +264,15 @@ class Pdm4arAgent(Agent):
                 )
 
     def handle_hold_lane_state(self, current_state, sim_obs) -> VehicleCommands:
+        """ "
+        Handle the HOLD_LANE state of the agent.
+        In this state, the agent is holding its lane.
+        If the agent is on the goal lane, it switches to the GOAL_STATE.
+        If the agent is not on the goal lane, it attempts to change lanes again after 0.5 seconds.
+        The agent uses the velocity controller to maintain a safe distance to the vehicles in front
+        and the custom steering controller to stay in the lane.
+        """
+
         # check if car is on goal lane
         player_lanelet_id = self.lanelet_network.find_lanelet_by_position(
             [np.array([current_state.x, current_state.y])]
@@ -248,13 +288,24 @@ class Pdm4arAgent(Agent):
         return VehicleCommands(acc, ddelta)
 
     def handle_goal_state(self, current_state, sim_obs) -> VehicleCommands:
-        """Handle the goal state of the agent."""
+        """
+        Handle the goal state of the agent.
+        In this state, the agent has reached the goal lane and the controllers ensure that
+        the agent stays in the lane and keeps a safe distance to the vehicles in front.
+        """
+
         # In the goal state, we can simply return the commands to maintain the current speed and direction.
         acc = self.velocity_controller.abstandhalteassistent(current_state, sim_obs.players)
         ddelta = self.custom_steer_controller.spurhalteassistent(current_state, float(sim_obs.time))
         return VehicleCommands(acc, ddelta)
 
     def shortest_path_finder(self, sim_obs, weighted_graph, states_dyn_obs):
+        """
+        Find the shortest path using Dijkstra's algorithm.
+        If a collision is detected, the algorithm will remove the edges and nodes of the shortest path
+        and recompute the shortest path until a valid path is found or the maximum depth is reached.
+        """
+
         current_occupancy = sim_obs.players["Ego"].occupancy
         self.count_removed_branches = 0  # note: assume one branch per lane change
         for k in range(weighted_graph.num_goal_nodes):
@@ -281,15 +332,24 @@ class Pdm4arAgent(Agent):
                 for u, v in edges_to_remove:
                     if u in weighted_graph.adj_list:
                         weighted_graph.adj_list[u].discard(v)
+
                 self.count_removed_branches += 1
                 self.shortest_path = []
                 continue
+
             else:
-                # a path without collision was found
                 print("Found path without collision.")
                 break
 
     def process_dyn_obs(self, sim_obs) -> list:
+        """
+        Process dynamic obstacles from the simulation observations.
+        If the speed of a player is above a certain threshold, we calculate a bigger occupancy
+        to account for the larger area they might cover due to their speed.
+        Otherwise, we use the standard occupancy.
+        This is to ensure that the collision checker is more conservative.
+        """
+
         dyn_obs_current = []
         magic_speed = 6
         for player in sim_obs.players:
@@ -323,6 +383,11 @@ class Pdm4arAgent(Agent):
         return dyn_obs_current
 
     def retrieve_goal_lane_ids(self) -> list:
+        """
+        Retrieve the lane IDs of the goal lane.
+        The goal lane is a concatenation of multiple lanelets leading to the goal.
+        """
+
         goal_lane_ids = [self.goal_id]
         lanelet = self.lanelet_network.find_lanelet_by_id(goal_lane_ids[-1])
         predecessor_id = lanelet.predecessor
